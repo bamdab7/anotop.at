@@ -43,3 +43,15 @@ def zoom_to_fit_width(page_width_pt: float, available_px: float) -> float:
     if page_width_pt <= 0 or available_px <= 0:
         return 1.0
     return clamp_zoom(available_px / points_to_pixels(page_width_pt, 1.0))
+
+
+def zoom_to_fit(page_width_pt: float, page_height_pt: float,
+                max_width_px: float, max_height_px: float) -> float:
+    """Zoom con el que la página entera cabe en el recuadro dado (para miniaturas).
+
+    No se limita a MIN_ZOOM: una miniatura puede necesitar menos zoom que la vista.
+    """
+    if min(page_width_pt, page_height_pt, max_width_px, max_height_px) <= 0:
+        return 1.0
+    return min(max_width_px / points_to_pixels(page_width_pt, 1.0),
+               max_height_px / points_to_pixels(page_height_pt, 1.0))

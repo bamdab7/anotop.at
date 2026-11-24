@@ -6,10 +6,21 @@ from pathlib import Path
 import pymupdf
 
 from .geometry import scale_for_zoom
+from .search import SearchHit
 
 
 class DocumentError(Exception):
     """Error al abrir o leer un PDF. El mensaje está pensado para mostrarse al usuario."""
+
+
+@dataclass(frozen=True)
+class OutlineEntry:
+    """Una entrada del índice. ``page`` es -1 si no apunta a una página del documento."""
+
+    level: int  # 1 = primer nivel
+    title: str
+    page: int
+    y: float = 0.0  # altura de destino en puntos PDF, desde arriba de la página visible
 
 
 @dataclass(frozen=True)
@@ -52,6 +63,32 @@ class PdfDocument:
         scale = scale_for_zoom(zoom) * device_pixel_ratio
         pix = self._doc[index].get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
         return RenderedPage(pix.width, pix.height, pix.stride, bytes(pix.samples))
+
+    def outline(self) -> list[OutlineEntry]:
+        """Índice (marcadores) del PDF en orden; lista vacía si no tiene."""
+        entries = []
+        for level, title, _page, dest in self._doc.get_toc(simple=False):
+            page = dest.get("page", -1) if isinstance(dest, dict) else -1
+            if not 0 <= page < self.page_count:
+                page = -1
+            y = 0.0
+            to = dest.get("to") if isinstance(dest, dict) else None
+            if page >= 0 and to is not None:
+                # "to" viene en coordenadas de la página sin rotar.
+                point = pymupdf.Point(to) * self._doc[page].rotation_matrix
+                y = min(max(0.0, point.y), self._sizes[page][1])
+            entries.append(OutlineEntry(level, title.strip() or "(sin título)", page, y))
+        return entries
+
+    def search_page(self, index: int, text: str) -> list[SearchHit]:
+        """Coincidencias de ``text`` (sin distinguir mayúsculas) en la página ``index``."""
+        if not text:
+            return []
+        page = self._doc[index]
+        # search_for devuelve coordenadas de la página sin rotar: las pasamos a las visibles.
+        # El orden es el de lectura del texto.
+        rects = [r * page.rotation_matrix for r in page.search_for(text)]
+        return [SearchHit(index, r.x0, r.y0, r.x1, r.y1) for r in rects]
 
     def close(self) -> None:
         self._doc.close()

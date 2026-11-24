@@ -31,3 +31,14 @@ def test_fit_width():
     zoom = g.zoom_to_fit_width(600, 400)
     assert g.points_to_pixels(600, zoom) == pytest.approx(400)
     assert g.zoom_to_fit_width(0, 400) == 1.0
+
+
+def test_zoom_to_fit_keeps_whole_page_inside_box():
+    # Página vertical: manda el alto.
+    zoom = g.zoom_to_fit(300, 600, 200, 200)
+    assert g.points_to_pixels(600, zoom) == pytest.approx(200)
+    assert g.points_to_pixels(300, zoom) <= 200
+    # Página apaisada: manda el ancho.
+    zoom = g.zoom_to_fit(600, 300, 200, 200)
+    assert g.points_to_pixels(600, zoom) == pytest.approx(200)
+    assert g.zoom_to_fit(0, 300, 200, 200) == 1.0

@@ -14,13 +14,18 @@ from PySide6.QtWidgets import QAbstractScrollArea
 
 from anotador.core.document import PdfDocument
 from anotador.core.geometry import clamp_zoom, zoom_in, zoom_out, zoom_to_fit_width
-from anotador.core.layout import MARGIN_PX, PageLayout
+from anotador.core.layout import MARGIN_PX, DocumentPoint, PageLayout
+from anotador.core.search import SearchHit, SearchResults
 
 CACHE_SIZE = 24          # páginas renderizadas que se guardan en memoria
 RERENDER_DELAY_MS = 120  # espera tras un cambio de zoom antes de re-renderizar
 WHEEL_ZOOM_FACTOR = 1.15  # zoom por cada "clic" de la rueda con Ctrl
 BACKGROUND = QColor("#5a5a5a")
 BORDER = QColor("#3a3a3a")
+# Resaltado de búsqueda: solo se pinta en pantalla, nunca se guarda en el PDF.
+HIT_FILL = QColor(255, 220, 0, 90)
+CURRENT_HIT_FILL = QColor(255, 120, 0, 120)
+CURRENT_HIT_BORDER = QColor(220, 80, 0)
 
 
 class _CachedPage:
@@ -43,6 +48,7 @@ class PageView(QAbstractScrollArea):
         self._layout = PageLayout([], self._zoom)
         self._cache: OrderedDict[int, _CachedPage] = OrderedDict()
         self._current_page = -1
+        self._search: SearchResults | None = None
 
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -76,6 +82,7 @@ class PageView(QAbstractScrollArea):
 
     def set_document(self, doc: PdfDocument | None) -> None:
         self._doc = doc
+        self._search = None
         self._cache.clear()
         self._render_timer.stop()
         if doc is not None and self._fit_width:
@@ -107,6 +114,40 @@ class PageView(QAbstractScrollArea):
         if not 0 <= index < len(self._layout):
             return
         self.verticalScrollBar().setValue(round(self._layout.rects[index].y - MARGIN_PX))
+
+    def go_to_point(self, page: int, y_pt: float) -> None:
+        """Coloca arriba de la vista la altura ``y_pt`` (puntos PDF) de la página."""
+        if not 0 <= page < len(self._layout):
+            return
+        if y_pt <= 0:
+            self.go_to_page(page)
+            return
+        _, y = self._layout.from_document(DocumentPoint(page, 0, y_pt))
+        self.verticalScrollBar().setValue(round(y - MARGIN_PX))
+
+    def set_search_results(self, results: SearchResults | None) -> None:
+        """Coincidencias que se resaltan; llama de nuevo cuando cambien."""
+        self._search = results
+        self.viewport().update()
+
+    def show_hit(self, hit: SearchHit) -> None:
+        """Desplaza la vista lo justo para que la coincidencia se vea (centrada si hace falta)."""
+        if not 0 <= hit.page < len(self._layout):
+            return
+        rect = self._hit_rect(hit, QPointF(0, 0))
+        top = -self._origin().y()
+        left = -self._origin().x()
+        vw, vh = self.viewport().width(), self.viewport().height()
+        if rect.top() < top or rect.bottom() > top + vh:
+            self.verticalScrollBar().setValue(round(rect.center().y() - vh / 2))
+        if rect.left() < left or rect.right() > left + vw:
+            self.horizontalScrollBar().setValue(round(rect.center().x() - vw / 2))
+        self.viewport().update()
+
+    def _hit_rect(self, hit: SearchHit, origin: QPointF) -> QRectF:
+        x0, y0 = self._layout.from_document(DocumentPoint(hit.page, hit.x0, hit.y0))
+        x1, y1 = self._layout.from_document(DocumentPoint(hit.page, hit.x1, hit.y1))
+        return QRectF(x0 + origin.x(), y0 + origin.y(), x1 - x0, y1 - y0)
 
     # ---- Geometría ---------------------------------------------------------
 
@@ -254,10 +295,26 @@ class PageView(QAbstractScrollArea):
                 painter.drawImage(target, cached.image)
             if not self._is_fresh(cached):
                 needs_render = True
+            self._paint_hits(painter, i, origin)
         painter.end()
 
         if needs_render and not self._render_timer.isActive():
             self._schedule_render()
+
+    def _paint_hits(self, painter: QPainter, page: int, origin: QPointF) -> None:
+        if self._search is None:
+            return
+        for index, hit in self._search.hits_on_page(page):
+            rect = self._hit_rect(hit, origin).adjusted(-1, -1, 1, 1)
+            if index == self._search.current:
+                painter.setPen(QPen(CURRENT_HIT_BORDER, 1.5))
+                painter.setBrush(CURRENT_HIT_FILL)
+            else:
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(HIT_FILL)
+            painter.drawRect(rect)
+        painter.setPen(QPen(BORDER, 1))
+        painter.setBrush(Qt.white)
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:
         self.viewport().update()
