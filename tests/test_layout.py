@@ -70,3 +70,12 @@ def test_document_point_round_trip_across_zoom():
     assert again.page == 3
     assert (again.x, again.y) == pytest.approx((100, 400))
     assert y2 > y  # con más zoom el mismo punto queda más abajo
+
+
+def test_to_page_uses_fixed_page_even_outside_it():
+    layout = make_layout([(72, 72)] * 3)
+    below = layout.rects[1].bottom + 50  # ya dentro de la página 2
+    point = layout.to_page(1, layout.rects[1].x, below)
+    assert point.page == 1
+    assert point.x == pytest.approx(0)
+    assert point.y > 72  # por debajo del borde inferior de la página 1

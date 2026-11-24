@@ -38,6 +38,7 @@ class ThumbnailModel(QAbstractListModel):
         self._doc: PdfDocument | None = None
         self._cache: OrderedDict[int, QPixmap] = OrderedDict()
         self._pending: list[int] = []
+        self._refreshing: set[int] = set()
         self._placeholder = self._make_placeholder()
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -54,7 +55,21 @@ class ThumbnailModel(QAbstractListModel):
         self._doc = doc
         self._cache.clear()
         self._pending.clear()
+        self._refreshing.clear()
         self.endResetModel()
+
+    def refresh(self, row: int) -> None:
+        """Vuelve a renderizar una miniatura (la vieja se ve hasta tener la nueva)."""
+        if self._doc is None or row not in self._cache:
+            return
+        if not self._is_visible(row):
+            del self._cache[row]  # se renderizará cuando vuelva a verse
+            return
+        self._refreshing.add(row)
+        if row in self._pending:
+            self._pending.remove(row)
+        self._pending.insert(0, row)
+        self._timer.start(0)
 
     def rowCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() or self._doc is None else self._doc.page_count
@@ -90,8 +105,13 @@ class ThumbnailModel(QAbstractListModel):
         # Las filas que ya no se ven (por un scroll rápido) se descartan.
         while self._pending:
             row = self._pending.pop(0)
-            if row not in self._cache and self._is_visible(row):
+            stale = row not in self._cache or row in self._refreshing
+            if stale and self._is_visible(row):
+                self._refreshing.discard(row)
                 break
+            if row in self._refreshing:  # dejó de verse: mejor renderizarla al volver
+                self._refreshing.discard(row)
+                self._cache.pop(row, None)
         else:
             return
         dpr = self._view.devicePixelRatioF()
@@ -158,6 +178,9 @@ class SidePanel(QTabWidget):
         self._doc = doc
         self._thumb_model.set_document(doc)
         self._fill_outline(doc.outline() if doc else [])
+
+    def refresh_page(self, page: int) -> None:
+        self._thumb_model.refresh(page)
 
     def set_current_page(self, page: int) -> None:
         """Marca la miniatura de la página actual sin provocar un salto."""

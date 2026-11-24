@@ -80,6 +80,13 @@ class PageLayout:
                              pixels_to_points(x - rect.x, self.zoom),
                              pixels_to_points(y - rect.y, self.zoom))
 
+    def to_page(self, page: int, x: float, y: float) -> DocumentPoint:
+        """Como ``to_document`` pero respecto a una página fija (puede quedar fuera de ella)."""
+        rect = self.rects[page]
+        return DocumentPoint(page,
+                             pixels_to_points(x - rect.x, self.zoom),
+                             pixels_to_points(y - rect.y, self.zoom))
+
     def from_document(self, point: DocumentPoint) -> tuple[float, float]:
         """Inverso de ``to_document``."""
         rect = self.rects[point.page]

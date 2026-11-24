@@ -7,8 +7,10 @@ from PySide6.QtGui import QAction, QIntValidator, QKeySequence
 from PySide6.QtWidgets import (QDockWidget, QFileDialog, QLabel, QLineEdit, QMainWindow,
                                QMessageBox, QSizePolicy, QToolBar, QVBoxLayout, QWidget)
 
+from anotador.core.annotations import MarkupKind
 from anotador.core.document import DocumentError, PdfDocument
 
+from .annotate_toolbar import AnnotateToolBar
 from .page_view import PageView
 from .search_bar import SearchBar
 from .side_panel import SidePanel
@@ -58,6 +60,9 @@ class MainWindow(QMainWindow):
         self.search_bar.resultsChanged.connect(self.view.set_search_results)
         self.search_bar.hitSelected.connect(self.view.show_hit)
         self.search_bar.closed.connect(self.view.setFocus)
+        self.view.selectionChanged.connect(self.annotate_bar.set_has_selection)
+        self.view.selectionChanged.connect(self.act_copy.setEnabled)
+        self.annotate_bar.markupRequested.connect(self._add_markup)
 
         self._update_ui()
 
@@ -68,6 +73,20 @@ class MainWindow(QMainWindow):
         self.act_open.setShortcut(QKeySequence.Open)
         self.act_open.setToolTip("Abrir un PDF (Ctrl+O)")
         self.act_open.triggered.connect(self.open_dialog)
+
+        self.act_save = QAction("&Guardar", self)
+        self.act_save.setShortcut(QKeySequence.Save)
+        self.act_save.setToolTip("Guardar las anotaciones en el PDF (Ctrl+S)")
+        self.act_save.triggered.connect(self.save)
+
+        self.act_save_as = QAction("Guardar &como…", self)
+        self.act_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self.act_save_as.triggered.connect(self.save_as)
+
+        self.act_copy = QAction("&Copiar", self)
+        self.act_copy.setShortcut(QKeySequence.Copy)
+        self.act_copy.setShortcutContext(Qt.WidgetShortcut)  # Ctrl+C lo gestiona la vista
+        self.act_copy.triggered.connect(self.view.copy_selection)
 
         self.act_quit = QAction("&Salir", self)
         self.act_quit.setShortcut(QKeySequence("Ctrl+Q"))
@@ -114,10 +133,14 @@ class MainWindow(QMainWindow):
     def _create_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&Archivo")
         file_menu.addAction(self.act_open)
+        file_menu.addAction(self.act_save)
+        file_menu.addAction(self.act_save_as)
         file_menu.addSeparator()
         file_menu.addAction(self.act_quit)
 
         edit_menu = self.menuBar().addMenu("&Editar")
+        edit_menu.addAction(self.act_copy)
+        edit_menu.addSeparator()
         edit_menu.addAction(self.act_find)
         edit_menu.addAction(self.act_find_next)
         edit_menu.addAction(self.act_find_previous)
@@ -143,6 +166,7 @@ class MainWindow(QMainWindow):
         self.addToolBar(bar)
         bar.addAction(self.act_side_panel)
         bar.addAction(self.act_open)
+        bar.addAction(self.act_save)
         bar.addSeparator()
 
         bar.addWidget(QLabel(" Página "))
@@ -170,6 +194,10 @@ class MainWindow(QMainWindow):
         bar.addSeparator()
         bar.addAction(self.act_find)
 
+        self.addToolBarBreak()
+        self.annotate_bar = AnnotateToolBar(self)
+        self.addToolBar(self.annotate_bar)
+
     # ---- Abrir archivos ----------------------------------------------------
 
     def open_dialog(self) -> None:
@@ -180,6 +208,8 @@ class MainWindow(QMainWindow):
             self.open_file(path)
 
     def open_file(self, path) -> bool:
+        if not self._confirm_discard_changes():
+            return False
         try:
             doc = PdfDocument(path)
         except DocumentError as exc:
@@ -226,6 +256,9 @@ class MainWindow(QMainWindow):
             self.open_file(path)
 
     def closeEvent(self, event) -> None:
+        if not self._confirm_discard_changes():
+            event.ignore()
+            return
         self._close_document()
         super().closeEvent(event)
 
@@ -235,14 +268,17 @@ class MainWindow(QMainWindow):
         has_doc = self._doc is not None
         for item in (self.act_zoom_in, self.act_zoom_out, self.act_actual_size,
                      self.act_fit_width, self.page_edit, self.act_find,
-                     self.act_find_next, self.act_find_previous, *self._view_items):
+                     self.act_find_next, self.act_find_previous, self.act_save_as,
+                     self.annotate_bar, *self._view_items):
             item.setEnabled(has_doc)
+        self.act_copy.setEnabled(self.view.selection is not None)
+        self.annotate_bar.set_has_selection(self.view.selection is not None)
         if not has_doc:
             self.search_bar.close_bar()
         count = self.view.page_count
         self.page_edit.setValidator(QIntValidator(1, max(1, count), self))
         self.page_total.setText(f" / {count} ")
-        self.setWindowTitle(f"{self._doc.path.name} — {APP_NAME}" if has_doc else APP_NAME)
+        self._update_modified()
         self._show_current_page()
         self._on_zoom_changed(self.view.zoom)
 
@@ -280,3 +316,76 @@ class MainWindow(QMainWindow):
             self.search_bar.open_bar()
         else:
             self.search_bar.find_previous()
+
+    # ---- Anotaciones -------------------------------------------------------
+
+    def _add_markup(self, kind: MarkupKind) -> None:
+        selection = self.view.selection
+        if self._doc is None or selection is None:
+            return
+        try:
+            self._doc.add_text_markup(selection, kind, self.annotate_bar.color)
+        except Exception as exc:  # error inesperado de PyMuPDF: avisamos y seguimos
+            QMessageBox.warning(self, "No se pudo anotar", f"No se pudo crear la anotación: {exc}")
+            return
+        self.view.clear_selection()
+        self.view.refresh_page(selection.page)
+        self.side_panel.refresh_page(selection.page)
+        self._update_modified()
+
+    # ---- Guardar -----------------------------------------------------------
+
+    def _update_modified(self) -> None:
+        modified = self._doc is not None and self._doc.modified
+        self.act_save.setEnabled(modified)
+        # «[*]» es donde Qt pone el asterisco de «cambios sin guardar».
+        title = f"{self._doc.path.name}[*] — {APP_NAME}" if self._doc else APP_NAME
+        self.setWindowTitle(title)
+        self.setWindowModified(modified)
+
+    def save(self) -> bool:
+        """Guarda en el archivo actual. Devuelve False si no se pudo."""
+        if self._doc is None:
+            return True
+        return self._save_to(None)
+
+    def save_as(self) -> bool:
+        if self._doc is None:
+            return True
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Guardar como", str(self._doc.path), "Documentos PDF (*.pdf)")
+        if not path:
+            return False
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        return self._save_to(path)
+
+    def _save_to(self, path) -> bool:
+        try:
+            self._doc.save(path)
+        except DocumentError as exc:
+            QMessageBox.warning(self, "No se pudo guardar", str(exc))
+            return False
+        self._last_dir = str(self._doc.path.parent)
+        self._update_modified()
+        self.statusBar().showMessage(f"Guardado en «{self._doc.path.name}»", 4000)
+        return True
+
+    def _confirm_discard_changes(self) -> bool:
+        """Si hay cambios sin guardar, pregunta. Devuelve True si se puede continuar."""
+        if self._doc is None or not self._doc.modified:
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(APP_NAME)
+        box.setText(f"«{self._doc.path.name}» tiene anotaciones sin guardar.")
+        box.setInformativeText("¿Quieres guardar los cambios?")
+        save_button = box.addButton("Guardar", QMessageBox.AcceptRole)
+        discard_button = box.addButton("No guardar", QMessageBox.DestructiveRole)
+        box.addButton("Cancelar", QMessageBox.RejectRole)
+        box.setDefaultButton(save_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save_button:
+            return self.save()
+        return clicked is discard_button

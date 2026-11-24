@@ -9,9 +9,10 @@ o, si se acaba de cambiar el zoom, la imagen anterior reescalada.
 from collections import OrderedDict
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen
 from PySide6.QtWidgets import QAbstractScrollArea
 
+from anotador.core.annotations import TextSelection
 from anotador.core.document import PdfDocument
 from anotador.core.geometry import clamp_zoom, zoom_in, zoom_out, zoom_to_fit_width
 from anotador.core.layout import MARGIN_PX, DocumentPoint, PageLayout
@@ -26,6 +27,9 @@ BORDER = QColor("#3a3a3a")
 HIT_FILL = QColor(255, 220, 0, 90)
 CURRENT_HIT_FILL = QColor(255, 120, 0, 120)
 CURRENT_HIT_BORDER = QColor(220, 80, 0)
+SELECTION_FILL = QColor(40, 110, 230, 80)
+DRAG_THRESHOLD_PX = 3  # lo que hay que mover el ratón para que cuente como arrastre
+AUTOSCROLL_STEP_PX = 30
 
 
 class _CachedPage:
@@ -39,6 +43,7 @@ class PageView(QAbstractScrollArea):
     currentPageChanged = Signal(int)
     zoomChanged = Signal(float)
     fitWidthChanged = Signal(bool)
+    selectionChanged = Signal(bool)  # True si hay texto seleccionado
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -49,6 +54,9 @@ class PageView(QAbstractScrollArea):
         self._cache: OrderedDict[int, _CachedPage] = OrderedDict()
         self._current_page = -1
         self._search: SearchResults | None = None
+        self._selection: TextSelection | None = None
+        self._press_page = -1
+        self._press_content: QPointF | None = None  # en coordenadas del contenido
 
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -61,6 +69,7 @@ class PageView(QAbstractScrollArea):
         self.verticalScrollBar().setSingleStep(40)
         self.horizontalScrollBar().setSingleStep(40)
         self.setFocusPolicy(Qt.StrongFocus)
+        self.viewport().setCursor(Qt.IBeamCursor)
 
     # ---- API pública -------------------------------------------------------
 
@@ -83,6 +92,8 @@ class PageView(QAbstractScrollArea):
     def set_document(self, doc: PdfDocument | None) -> None:
         self._doc = doc
         self._search = None
+        self._press_page = -1
+        self.clear_selection()
         self._cache.clear()
         self._render_timer.stop()
         if doc is not None and self._fit_width:
@@ -124,6 +135,31 @@ class PageView(QAbstractScrollArea):
             return
         _, y = self._layout.from_document(DocumentPoint(page, 0, y_pt))
         self.verticalScrollBar().setValue(round(y - MARGIN_PX))
+
+    @property
+    def selection(self) -> TextSelection | None:
+        return self._selection
+
+    def clear_selection(self) -> None:
+        if self._selection is not None:
+            self._selection = None
+            self.viewport().update()
+            self.selectionChanged.emit(False)
+
+    def copy_selection(self) -> None:
+        if self._selection is not None:
+            QGuiApplication.clipboard().setText(self._selection.text)
+
+    def refresh_page(self, index: int) -> None:
+        """Vuelve a renderizar una página (p. ej. tras añadirle una anotación).
+
+        Mientras tanto se sigue viendo la imagen anterior, así no parpadea.
+        """
+        cached = self._cache.get(index)
+        if cached is not None:
+            cached.zoom = None  # deja de estar al día
+        self.viewport().update()
+        self._schedule_render()
 
     def set_search_results(self, results: SearchResults | None) -> None:
         """Coincidencias que se resaltan; llama de nuevo cuando cambien."""
@@ -296,6 +332,7 @@ class PageView(QAbstractScrollArea):
             if not self._is_fresh(cached):
                 needs_render = True
             self._paint_hits(painter, i, origin)
+        self._paint_selection(painter, origin)
         painter.end()
 
         if needs_render and not self._render_timer.isActive():
@@ -315,6 +352,66 @@ class PageView(QAbstractScrollArea):
             painter.drawRect(rect)
         painter.setPen(QPen(BORDER, 1))
         painter.setBrush(Qt.white)
+
+    def _paint_selection(self, painter: QPainter, origin: QPointF) -> None:
+        sel = self._selection
+        if sel is None or sel.page not in self._visible_pages():
+            return
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(SELECTION_FILL)
+        for x0, y0, x1, y1 in sel.rects:
+            painter.drawRect(self._hit_rect(SearchHit(sel.page, x0, y0, x1, y1), origin))
+
+    # ---- Selección con el ratón -------------------------------------------
+
+    def _content_pos(self, pos: QPointF) -> QPointF:
+        return pos - self._origin()
+
+    def _update_drag_selection(self, pos: QPointF) -> None:
+        start = self._press_content
+        end = self._content_pos(pos)
+        if (end - start).manhattanLength() < DRAG_THRESHOLD_PX:
+            return
+        # La selección se queda en la página donde empezó el arrastre.
+        a = self._layout.to_page(self._press_page, start.x(), start.y())
+        b = self._layout.to_page(self._press_page, end.x(), end.y())
+        selection = self._doc.select_text(self._press_page, (a.x, a.y), (b.x, b.y))
+        if selection != self._selection:
+            self._selection = selection
+            self.viewport().update()
+            self.selectionChanged.emit(selection is not None)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() != Qt.LeftButton or self._doc is None or not len(self._layout):
+            super().mousePressEvent(event)
+            return
+        self.setFocus()
+        self.clear_selection()
+        self._press_content = self._content_pos(event.position())
+        self._press_page = self._layout.page_at_y(self._press_content.y())
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:
+        if not (event.buttons() & Qt.LeftButton) or self._press_page < 0:
+            super().mouseMoveEvent(event)
+            return
+        # Si se arrastra fuera de la vista, desplazamos para poder seguir seleccionando.
+        y = event.position().y()
+        vbar = self.verticalScrollBar()
+        if y < 0:
+            vbar.setValue(vbar.value() - AUTOSCROLL_STEP_PX)
+        elif y > self.viewport().height():
+            vbar.setValue(vbar.value() + AUTOSCROLL_STEP_PX)
+        self._update_drag_selection(event.position())
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._press_page >= 0:
+            self._update_drag_selection(event.position())
+            self._press_page = -1
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:
         self.viewport().update()
@@ -337,7 +434,11 @@ class PageView(QAbstractScrollArea):
         super().wheelEvent(event)
 
     def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key_Home:
+        if event.matches(QKeySequence.Copy):
+            self.copy_selection()
+        elif event.key() == Qt.Key_Escape and self._selection is not None:
+            self.clear_selection()
+        elif event.key() == Qt.Key_Home:
             self.go_to_page(0)
         elif event.key() == Qt.Key_End:
             self.go_to_page(self.page_count - 1)
