@@ -7,14 +7,16 @@ o, si se acaba de cambiar el zoom, la imagen anterior reescalada.
 """
 
 from collections import OrderedDict
+from enum import Enum
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen
-from PySide6.QtWidgets import QAbstractScrollArea
+from PySide6.QtWidgets import QAbstractScrollArea, QMenu
 
-from anotador.core.annotations import TextSelection
+from anotador.core.annotations import AnnotationInfo, TextSelection
 from anotador.core.document import PdfDocument
-from anotador.core.geometry import clamp_zoom, zoom_in, zoom_out, zoom_to_fit_width
+from anotador.core.geometry import (clamp_zoom, pixels_to_points, zoom_in, zoom_out,
+                                    zoom_to_fit_width)
 from anotador.core.layout import MARGIN_PX, DocumentPoint, PageLayout
 from anotador.core.search import SearchHit, SearchResults
 
@@ -30,6 +32,24 @@ CURRENT_HIT_BORDER = QColor(220, 80, 0)
 SELECTION_FILL = QColor(40, 110, 230, 80)
 DRAG_THRESHOLD_PX = 3  # lo que hay que mover el ratón para que cuente como arrastre
 AUTOSCROLL_STEP_PX = 30
+ANNOT_OUTLINE = QColor(30, 100, 220)
+ANNOT_GHOST_FILL = QColor(30, 100, 220, 40)
+
+
+class Tool(Enum):
+    """Qué hace el ratón en la página."""
+
+    SELECT = "select"      # seleccionar texto; mover y editar notas y cuadros
+    NOTE = "note"          # clic: nueva nota adhesiva
+    TEXT_BOX = "text_box"  # arrastrar: nuevo cuadro de texto
+
+
+class _Drag(Enum):
+    NONE = 0
+    TEXT = 1         # seleccionando texto
+    MOVE_ANNOT = 2   # moviendo una nota o cuadro
+    NEW_BOX = 3      # dibujando un cuadro de texto nuevo
+    NEW_NOTE = 4     # clic con la herramienta de nota
 
 
 class _CachedPage:
@@ -44,6 +64,14 @@ class PageView(QAbstractScrollArea):
     zoomChanged = Signal(float)
     fitWidthChanged = Signal(bool)
     selectionChanged = Signal(bool)  # True si hay texto seleccionado
+    toolChanged = Signal(object)  # Tool
+    annotationSelected = Signal(object)  # AnnotationInfo o None
+    # La vista no modifica el documento: pide los cambios y la ventana los hace.
+    noteRequested = Signal(int, float, float)        # página, x, y (puntos)
+    textBoxRequested = Signal(int, object)           # página, (x0, y0, x1, y1) en puntos
+    moveRequested = Signal(int, int, float, float)   # página, xref, dx, dy (puntos)
+    editRequested = Signal(int, int)                 # página, xref
+    deleteRequested = Signal(int, int)               # página, xref
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -57,6 +85,10 @@ class PageView(QAbstractScrollArea):
         self._selection: TextSelection | None = None
         self._press_page = -1
         self._press_content: QPointF | None = None  # en coordenadas del contenido
+        self._drag_content: QPointF | None = None   # posición actual del arrastre
+        self._drag = _Drag.NONE
+        self._tool = Tool.SELECT
+        self._selected_annot: AnnotationInfo | None = None
 
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -70,6 +102,7 @@ class PageView(QAbstractScrollArea):
         self.horizontalScrollBar().setSingleStep(40)
         self.setFocusPolicy(Qt.StrongFocus)
         self.viewport().setCursor(Qt.IBeamCursor)
+        self.viewport().setMouseTracking(True)  # para cambiar el cursor al pasar por encima
 
     # ---- API pública -------------------------------------------------------
 
@@ -93,7 +126,10 @@ class PageView(QAbstractScrollArea):
         self._doc = doc
         self._search = None
         self._press_page = -1
+        self._drag = _Drag.NONE
         self.clear_selection()
+        self.select_annotation(None)
+        self.set_tool(Tool.SELECT)
         self._cache.clear()
         self._render_timer.stop()
         if doc is not None and self._fit_width:
@@ -161,6 +197,48 @@ class PageView(QAbstractScrollArea):
         self.viewport().update()
         self._schedule_render()
 
+    # ---- Herramientas y anotaciones ---------------------------------------
+
+    @property
+    def tool(self) -> Tool:
+        return self._tool
+
+    def set_tool(self, tool: Tool) -> None:
+        if tool == self._tool:
+            return
+        self._tool = tool
+        self._drag = _Drag.NONE
+        if tool != Tool.SELECT:
+            self.clear_selection()
+            self.select_annotation(None)
+        self.viewport().setCursor(Qt.IBeamCursor if tool == Tool.SELECT else Qt.CrossCursor)
+        self.viewport().update()
+        self.toolChanged.emit(tool)
+
+    @property
+    def selected_annotation(self) -> AnnotationInfo | None:
+        return self._selected_annot
+
+    def select_annotation(self, info: AnnotationInfo | None) -> None:
+        """Marca una anotación (contorno discontinuo); ``None`` la desmarca."""
+        if info == self._selected_annot:
+            return
+        self._selected_annot = info
+        self.viewport().update()
+        self.annotationSelected.emit(info)
+
+    def reselect_annotation(self, page: int, xref: int) -> None:
+        """Vuelve a leer del documento la anotación (p. ej. después de moverla)."""
+        if self._doc is None:
+            return
+        found = next((a for a in self._doc.annotations(page) if a.xref == xref), None)
+        self.select_annotation(found)
+
+    def show_annotation(self, info: AnnotationInfo) -> None:
+        """Lleva la vista hasta la anotación y la marca."""
+        self._ensure_visible(SearchHit(info.page, *info.rect))
+        self.select_annotation(info)
+
     def set_search_results(self, results: SearchResults | None) -> None:
         """Coincidencias que se resaltan; llama de nuevo cuando cambien."""
         self._search = results
@@ -168,6 +246,9 @@ class PageView(QAbstractScrollArea):
 
     def show_hit(self, hit: SearchHit) -> None:
         """Desplaza la vista lo justo para que la coincidencia se vea (centrada si hace falta)."""
+        self._ensure_visible(hit)
+
+    def _ensure_visible(self, hit: SearchHit) -> None:
         if not 0 <= hit.page < len(self._layout):
             return
         rect = self._hit_rect(hit, QPointF(0, 0))
@@ -333,6 +414,7 @@ class PageView(QAbstractScrollArea):
                 needs_render = True
             self._paint_hits(painter, i, origin)
         self._paint_selection(painter, origin)
+        self._paint_annotation_feedback(painter, origin)
         painter.end()
 
         if needs_render and not self._render_timer.isActive():
@@ -362,10 +444,41 @@ class PageView(QAbstractScrollArea):
         for x0, y0, x1, y1 in sel.rects:
             painter.drawRect(self._hit_rect(SearchHit(sel.page, x0, y0, x1, y1), origin))
 
-    # ---- Selección con el ratón -------------------------------------------
+    def _paint_annotation_feedback(self, painter: QPainter, origin: QPointF) -> None:
+        """Contorno de la anotación marcada, su «fantasma» al moverla y el cuadro nuevo."""
+        pen = QPen(ANNOT_OUTLINE, 1.5, Qt.DashLine)
+        info = self._selected_annot
+        if info is not None and info.page in self._visible_pages():
+            rect = self._hit_rect(SearchHit(info.page, *info.rect), origin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(rect.adjusted(-2, -2, 2, 2))
+            if self._drag == _Drag.MOVE_ANNOT and self._drag_content is not None:
+                painter.setBrush(ANNOT_GHOST_FILL)
+                painter.drawRect(rect.translated(self._drag_content - self._press_content))
+        if self._drag == _Drag.NEW_BOX and self._drag_content is not None:
+            painter.setPen(pen)
+            painter.setBrush(ANNOT_GHOST_FILL)
+            painter.drawRect(QRectF(self._press_content + origin,
+                                    self._drag_content + origin).normalized())
+
+    # ---- Ratón -------------------------------------------------------------
 
     def _content_pos(self, pos: QPointF) -> QPointF:
         return pos - self._origin()
+
+    def _page_point(self, page: int, content: QPointF) -> tuple[float, float]:
+        """Punto del contenido en puntos PDF de ``page`` (página tal como se ve)."""
+        point = self._layout.to_page(page, content.x(), content.y())
+        return (point.x, point.y)
+
+    def _annotation_under(self, pos: QPointF, movable_only: bool) -> AnnotationInfo | None:
+        if self._doc is None or not len(self._layout):
+            return None
+        content = self._content_pos(pos)
+        page = self._layout.page_at_y(content.y())
+        return self._doc.annotation_at(page, self._page_point(page, content),
+                                       movable_only=movable_only)
 
     def _update_drag_selection(self, pos: QPointF) -> None:
         start = self._press_content
@@ -382,36 +495,119 @@ class PageView(QAbstractScrollArea):
             self.selectionChanged.emit(selection is not None)
 
     def mousePressEvent(self, event) -> None:
-        if event.button() != Qt.LeftButton or self._doc is None or not len(self._layout):
+        if self._doc is None or not len(self._layout):
+            super().mousePressEvent(event)
+            return
+        if event.button() == Qt.RightButton:
+            self._show_context_menu(event)
+            return
+        if event.button() != Qt.LeftButton:
             super().mousePressEvent(event)
             return
         self.setFocus()
-        self.clear_selection()
         self._press_content = self._content_pos(event.position())
+        self._drag_content = None
         self._press_page = self._layout.page_at_y(self._press_content.y())
+        if self._tool == Tool.NOTE:
+            self._drag = _Drag.NEW_NOTE
+        elif self._tool == Tool.TEXT_BOX:
+            self._drag = _Drag.NEW_BOX
+        else:
+            self.clear_selection()
+            annot = self._annotation_under(event.position(), movable_only=True)
+            self.select_annotation(annot)
+            if annot is not None:
+                self._press_page = annot.page
+                self._drag = _Drag.MOVE_ANNOT
+            else:
+                self._drag = _Drag.TEXT
         event.accept()
 
     def mouseMoveEvent(self, event) -> None:
-        if not (event.buttons() & Qt.LeftButton) or self._press_page < 0:
+        if self._drag == _Drag.NONE or not (event.buttons() & Qt.LeftButton):
+            self._update_hover_cursor(event.position())
             super().mouseMoveEvent(event)
             return
-        # Si se arrastra fuera de la vista, desplazamos para poder seguir seleccionando.
+        # Si se arrastra fuera de la vista, desplazamos para poder seguir.
         y = event.position().y()
         vbar = self.verticalScrollBar()
         if y < 0:
             vbar.setValue(vbar.value() - AUTOSCROLL_STEP_PX)
         elif y > self.viewport().height():
             vbar.setValue(vbar.value() + AUTOSCROLL_STEP_PX)
-        self._update_drag_selection(event.position())
+        if self._drag == _Drag.TEXT:
+            self._update_drag_selection(event.position())
+        elif self._drag in (_Drag.MOVE_ANNOT, _Drag.NEW_BOX):
+            self._drag_content = self._content_pos(event.position())
+            self.viewport().update()
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton and self._press_page >= 0:
+        if event.button() != Qt.LeftButton or self._drag == _Drag.NONE:
+            super().mouseReleaseEvent(event)
+            return
+        drag, self._drag = self._drag, _Drag.NONE
+        page = self._press_page
+        self._press_page = -1
+        end = self._content_pos(event.position())
+        moved = (end - self._press_content).manhattanLength() >= DRAG_THRESHOLD_PX
+        self._drag_content = None
+        self.viewport().update()
+
+        if drag == _Drag.TEXT:
+            self._press_page = page  # _update_drag_selection la necesita
             self._update_drag_selection(event.position())
             self._press_page = -1
-            event.accept()
+        elif drag == _Drag.MOVE_ANNOT and moved and self._selected_annot is not None:
+            delta = end - self._press_content
+            self.moveRequested.emit(page, self._selected_annot.xref,
+                                    pixels_to_points(delta.x(), self._zoom),
+                                    pixels_to_points(delta.y(), self._zoom))
+        elif drag == _Drag.NEW_NOTE:
+            self.set_tool(Tool.SELECT)  # después de crear, se vuelve al modo normal
+            self.noteRequested.emit(page, *self._page_point(page, self._press_content))
+        elif drag == _Drag.NEW_BOX:
+            self.set_tool(Tool.SELECT)
+            x0, y0 = self._page_point(page, self._press_content)
+            x1, y1 = self._page_point(page, end)
+            self.textBoxRequested.emit(page, (x0, y0, x1, y1))
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._tool == Tool.SELECT:
+            annot = self._annotation_under(event.position(), movable_only=True)
+            if annot is not None:
+                self._drag = _Drag.NONE
+                self.select_annotation(annot)
+                self.editRequested.emit(annot.page, annot.xref)
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
+    def _update_hover_cursor(self, pos: QPointF) -> None:
+        if self._tool != Tool.SELECT:
             return
-        super().mouseReleaseEvent(event)
+        over = self._annotation_under(pos, movable_only=True) is not None
+        self.viewport().setCursor(Qt.SizeAllCursor if over else Qt.IBeamCursor)
+
+    def _show_context_menu(self, event) -> None:
+        """Clic derecho: editar o borrar la anotación que hay debajo (de cualquier tipo)."""
+        annot = self._annotation_under(event.position(), movable_only=False)
+        menu = QMenu(self)
+        if annot is not None:
+            self.select_annotation(annot)
+            if annot.movable:
+                menu.addAction("Editar texto…",
+                               lambda: self.editRequested.emit(annot.page, annot.xref))
+            menu.addAction(f"Borrar {annot.label.lower()}",
+                           lambda: self.deleteRequested.emit(annot.page, annot.xref))
+        if self._selection is not None:
+            if not menu.isEmpty():
+                menu.addSeparator()
+            menu.addAction("Copiar", self.copy_selection)
+        if not menu.isEmpty():
+            menu.exec(event.globalPosition().toPoint())
+        event.accept()
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:
         self.viewport().update()
@@ -436,8 +632,15 @@ class PageView(QAbstractScrollArea):
     def keyPressEvent(self, event) -> None:
         if event.matches(QKeySequence.Copy):
             self.copy_selection()
+        elif event.key() == Qt.Key_Escape and self._tool != Tool.SELECT:
+            self.set_tool(Tool.SELECT)
+        elif event.key() == Qt.Key_Escape and self._selected_annot is not None:
+            self.select_annotation(None)
         elif event.key() == Qt.Key_Escape and self._selection is not None:
             self.clear_selection()
+        elif event.key() == Qt.Key_Delete and self._selected_annot is not None:
+            info = self._selected_annot
+            self.deleteRequested.emit(info.page, info.xref)
         elif event.key() == Qt.Key_Home:
             self.go_to_page(0)
         elif event.key() == Qt.Key_End:

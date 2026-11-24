@@ -4,16 +4,21 @@ from collections import OrderedDict
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QLabel, QListView, QStackedWidget,
-                               QTabWidget, QTreeWidget, QTreeWidgetItem)
+from PySide6.QtWidgets import (QAbstractItemView, QLabel, QListView, QListWidget,
+                               QListWidgetItem, QMenu, QStackedWidget, QTabWidget,
+                               QTreeWidget, QTreeWidgetItem)
 
+from anotador.core.annotations import AnnotationInfo
 from anotador.core.document import PdfDocument
 from anotador.core.geometry import zoom_to_fit
+
+from .annotate_toolbar import color_icon
 
 THUMB_WIDTH = 120
 THUMB_HEIGHT = 160
 THUMB_CACHE_SIZE = 200
 THUMB_BORDER = QColor("#8a8a8a")
+SNIPPET_LENGTH = 80  # caracteres de texto que se ven de cada anotación en la lista
 
 
 def _with_border(pixmap: QPixmap) -> QPixmap:
@@ -131,8 +136,15 @@ class ThumbnailModel(QAbstractListModel):
             self._timer.start(0)
 
 
+def _snippet(text: str) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= SNIPPET_LENGTH else text[:SNIPPET_LENGTH - 1] + "…"
+
+
 class SidePanel(QTabWidget):
     pageRequested = Signal(int, float)  # página y altura en puntos PDF
+    annotationActivated = Signal(object)  # AnnotationInfo
+    annotationDeleteRequested = Signal(int, int)  # página, xref
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -172,12 +184,74 @@ class SidePanel(QTabWidget):
         self._outline_stack.addWidget(self.outline_tree)
         self.addTab(self._outline_stack, "Índice")
 
+        # ---- Anotaciones
+        self.annotation_list = QListWidget(self)
+        self.annotation_list.setWordWrap(True)
+        self.annotation_list.setAlternatingRowColors(True)
+        self.annotation_list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.annotation_list.itemClicked.connect(self._on_annotation_clicked)
+        self.annotation_list.itemActivated.connect(self._on_annotation_clicked)
+        self.annotation_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.annotation_list.customContextMenuRequested.connect(self._annotation_menu)
+        self._no_annotations = QLabel("Este documento no tiene anotaciones", self)
+        self._no_annotations.setAlignment(Qt.AlignCenter)
+        self._no_annotations.setWordWrap(True)
+        self._annotation_stack = QStackedWidget(self)
+        self._annotation_stack.addWidget(self._no_annotations)
+        self._annotation_stack.addWidget(self.annotation_list)
+        self.addTab(self._annotation_stack, "Anotaciones")
+
         self.setMinimumWidth(THUMB_WIDTH + 50)
 
     def set_document(self, doc: PdfDocument | None) -> None:
         self._doc = doc
         self._thumb_model.set_document(doc)
         self._fill_outline(doc.outline() if doc else [])
+        self.set_annotations(doc.all_annotations() if doc else [])
+
+    def set_annotations(self, annotations: list[AnnotationInfo],
+                        selected: AnnotationInfo | None = None) -> None:
+        """Rellena la lista. Conserva la posición del scroll para que no salte al editar."""
+        scroll = self.annotation_list.verticalScrollBar().value()
+        self.annotation_list.clear()
+        for info in annotations:
+            text = _snippet(info.text) if info.text else "(sin texto)"
+            item = QListWidgetItem(f"{info.label} · pág. {info.page + 1}\n{text}")
+            item.setData(Qt.UserRole, info)
+            item.setToolTip(info.text or info.label)
+            if info.color is not None:
+                item.setIcon(color_icon(info.color))
+            self.annotation_list.addItem(item)
+        self.annotation_list.verticalScrollBar().setValue(scroll)
+        self.select_annotation(selected)
+        self._annotation_stack.setCurrentWidget(
+            self.annotation_list if annotations else self._no_annotations)
+
+    def select_annotation(self, info: AnnotationInfo | None) -> None:
+        """Marca en la lista la anotación seleccionada en la página (sin saltar)."""
+        for row in range(self.annotation_list.count()):
+            item = self.annotation_list.item(row)
+            current = item.data(Qt.UserRole)
+            if info is not None and (current.page, current.xref) == (info.page, info.xref):
+                self.annotation_list.setCurrentItem(item)
+                self.annotation_list.scrollToItem(item)
+                return
+        self.annotation_list.clearSelection()
+        self.annotation_list.setCurrentItem(None)
+
+    def _on_annotation_clicked(self, item: QListWidgetItem) -> None:
+        self.annotationActivated.emit(item.data(Qt.UserRole))
+
+    def _annotation_menu(self, pos) -> None:
+        item = self.annotation_list.itemAt(pos)
+        if item is None:
+            return
+        info = item.data(Qt.UserRole)
+        menu = QMenu(self)
+        menu.addAction("Ir a la anotación", lambda: self.annotationActivated.emit(info))
+        menu.addAction(f"Borrar {info.label.lower()}",
+                       lambda: self.annotationDeleteRequested.emit(info.page, info.xref))
+        menu.exec(self.annotation_list.viewport().mapToGlobal(pos))
 
     def refresh_page(self, page: int) -> None:
         self._thumb_model.refresh(page)

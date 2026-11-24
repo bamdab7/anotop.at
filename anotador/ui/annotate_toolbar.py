@@ -1,10 +1,12 @@
 """Barra «Anotar»: resaltar, subrayar o tachar la selección, con varios colores."""
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QLabel, QToolBar
 
 from anotador.core.annotations import MARKUP_COLORS, Color, MarkupKind
+
+from .page_view import Tool
 
 ICON_SIZE = 32  # se dibuja grande y Qt lo reduce: así se ve nítido en pantallas escaladas
 
@@ -42,6 +44,45 @@ def markup_icon(kind: MarkupKind, color: Color) -> QIcon:
     return QIcon(pixmap)
 
 
+def note_icon(color: Color) -> QIcon:
+    """Papelito de color con la esquina doblada."""
+    pixmap = QPixmap(ICON_SIZE, ICON_SIZE)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(QPen(QColor("#505050"), 1.5))
+    painter.setBrush(_qcolor(color))
+    fold = 9
+    painter.drawPolygon([QPointF(5, 4), QPointF(27 - fold, 4), QPointF(27, 4 + fold),
+                         QPointF(27, 28), QPointF(5, 28)])
+    painter.drawLine(QPointF(27 - fold, 4), QPointF(27 - fold, 4 + fold))
+    painter.drawLine(QPointF(27 - fold, 4 + fold), QPointF(27, 4 + fold))
+    for y in (13, 18, 23):
+        painter.drawLine(QPointF(9, y), QPointF(23, y))
+    painter.end()
+    return QIcon(pixmap)
+
+
+def text_box_icon(color: Color) -> QIcon:
+    """Recuadro con una «T»."""
+    pixmap = QPixmap(ICON_SIZE, ICON_SIZE)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(QPen(QColor("#505050"), 1.5))
+    painter.setBrush(QColor.fromRgbF(*(0.8 + 0.2 * c for c in color)))
+    box = QRectF(3, 6, ICON_SIZE - 6, ICON_SIZE - 12)
+    painter.drawRect(box)
+    font = QFont()
+    font.setPixelSize(round(ICON_SIZE * 0.55))
+    font.setBold(True)
+    painter.setFont(font)
+    painter.setPen(QColor("#202020"))
+    painter.drawText(box, Qt.AlignCenter, "T")
+    painter.end()
+    return QIcon(pixmap)
+
+
 def color_icon(color: Color) -> QIcon:
     pixmap = QPixmap(ICON_SIZE, ICON_SIZE)
     pixmap.fill(Qt.transparent)
@@ -56,6 +97,7 @@ def color_icon(color: Color) -> QIcon:
 
 class AnnotateToolBar(QToolBar):
     markupRequested = Signal(object)  # MarkupKind
+    toolSelected = Signal(object)     # Tool
 
     def __init__(self, parent=None):
         super().__init__("Anotar", parent)
@@ -72,6 +114,24 @@ class AnnotateToolBar(QToolBar):
             action.triggered.connect(lambda _=False, k=kind: self.markupRequested.emit(k))
             self.addAction(action)
             self.markup_actions[kind] = action
+
+        self.addSeparator()
+        # Herramientas: como mucho una activa; sin ninguna, el ratón selecciona texto.
+        self._tool_group = QActionGroup(self)
+        self._tool_group.setExclusionPolicy(QActionGroup.ExclusionPolicy.ExclusiveOptional)
+        self.tool_actions: dict[Tool, QAction] = {}
+        for tool, label, shortcut, tip in (
+                (Tool.NOTE, "Nota", "Ctrl+Alt+N", "Nota adhesiva: haz clic donde quieras ponerla"),
+                (Tool.TEXT_BOX, "Cuadro de texto", "Ctrl+Alt+X",
+                 "Cuadro de texto: arrastra para dibujarlo")):
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setShortcut(shortcut)
+            action.setToolTip(f"{tip} ({shortcut}). Esc para cancelar.")
+            action.triggered.connect(self._on_tool_triggered)
+            self._tool_group.addAction(action)
+            self.addAction(action)
+            self.tool_actions[tool] = action
 
         self.addSeparator()
         self.addWidget(QLabel(" Color: ", self))
@@ -95,6 +155,21 @@ class AnnotateToolBar(QToolBar):
     def color(self) -> Color:
         return self._color
 
+    @property
+    def tool(self) -> Tool:
+        for tool, action in self.tool_actions.items():
+            if action.isChecked():
+                return tool
+        return Tool.SELECT
+
+    def set_tool(self, tool: Tool) -> None:
+        """Refleja en los botones la herramienta activa (sin emitir señales)."""
+        for key, action in self.tool_actions.items():
+            action.setChecked(key == tool)
+
+    def _on_tool_triggered(self) -> None:
+        self.toolSelected.emit(self.tool)
+
     def set_has_selection(self, has_selection: bool) -> None:
         for action in self.markup_actions.values():
             action.setEnabled(has_selection)
@@ -106,3 +181,5 @@ class AnnotateToolBar(QToolBar):
     def _refresh_icons(self) -> None:
         for kind, action in self.markup_actions.items():
             action.setIcon(markup_icon(kind, self._color))
+        self.tool_actions[Tool.NOTE].setIcon(note_icon(self._color))
+        self.tool_actions[Tool.TEXT_BOX].setIcon(text_box_icon(self._color))

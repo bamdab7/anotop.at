@@ -12,6 +12,7 @@ from anotador.core.document import DocumentError, PdfDocument
 
 from .annotate_toolbar import AnnotateToolBar
 from .page_view import PageView
+from .text_dialog import TextDialog
 from .search_bar import SearchBar
 from .side_panel import SidePanel
 
@@ -63,6 +64,16 @@ class MainWindow(QMainWindow):
         self.view.selectionChanged.connect(self.annotate_bar.set_has_selection)
         self.view.selectionChanged.connect(self.act_copy.setEnabled)
         self.annotate_bar.markupRequested.connect(self._add_markup)
+        self.annotate_bar.toolSelected.connect(self._on_tool_selected)
+        self.view.toolChanged.connect(self.annotate_bar.set_tool)
+        self.view.noteRequested.connect(self._create_note)
+        self.view.textBoxRequested.connect(self._create_text_box)
+        self.view.moveRequested.connect(self._move_annotation)
+        self.view.editRequested.connect(self._edit_annotation)
+        self.view.deleteRequested.connect(self._delete_annotation)
+        self.view.annotationSelected.connect(self.side_panel.select_annotation)
+        self.side_panel.annotationActivated.connect(self._show_annotation)
+        self.side_panel.annotationDeleteRequested.connect(self._delete_annotation)
 
         self._update_ui()
 
@@ -323,15 +334,84 @@ class MainWindow(QMainWindow):
         selection = self.view.selection
         if self._doc is None or selection is None:
             return
+        if self._apply(lambda: self._doc.add_text_markup(selection, kind,
+                                                         self.annotate_bar.color)):
+            self.view.clear_selection()
+            self._page_changed(selection.page)
+
+    def _apply(self, operation):
+        """Ejecuta un cambio en el documento; si PyMuPDF falla, avisa y devuelve None."""
         try:
-            self._doc.add_text_markup(selection, kind, self.annotate_bar.color)
-        except Exception as exc:  # error inesperado de PyMuPDF: avisamos y seguimos
-            QMessageBox.warning(self, "No se pudo anotar", f"No se pudo crear la anotación: {exc}")
-            return
-        self.view.clear_selection()
-        self.view.refresh_page(selection.page)
-        self.side_panel.refresh_page(selection.page)
+            result = operation()
+        except Exception as exc:  # error inesperado: avisamos y la app sigue
+            QMessageBox.warning(self, "No se pudo modificar el documento", str(exc))
+            return None
+        return True if result is None else result
+
+    def _page_changed(self, page: int, select_xref: int | None = None) -> None:
+        """Tras modificar una página: redibujarla y poner al día la lista y el título."""
+        self.view.refresh_page(page)
+        self.side_panel.refresh_page(page)
+        if select_xref is not None:
+            self.view.reselect_annotation(page, select_xref)
+        else:
+            self.view.select_annotation(None)
+        self.side_panel.set_annotations(self._doc.all_annotations(),
+                                        self.view.selected_annotation)
         self._update_modified()
+
+    def _on_tool_selected(self, tool) -> None:
+        self.view.set_tool(tool)
+        self.view.setFocus()  # para que Esc cancele la herramienta
+
+    def _create_note(self, page: int, x: float, y: float) -> None:
+        text = TextDialog.ask(self, "Nueva nota")
+        if not text:  # cancelada o vacía: no se crea nada
+            return
+        xref = self._apply(lambda: self._doc.add_note(page, (x, y), text,
+                                                      self.annotate_bar.color))
+        if xref:
+            self._page_changed(page, xref)
+
+    def _create_text_box(self, page: int, rect) -> None:
+        text = TextDialog.ask(self, "Nuevo cuadro de texto")
+        if not text:
+            return
+        xref = self._apply(lambda: self._doc.add_text_box(page, rect, text,
+                                                          self.annotate_bar.color))
+        if xref:
+            self._page_changed(page, xref)
+
+    def _find_annotation(self, page: int, xref: int):
+        return next((a for a in self._doc.annotations(page) if a.xref == xref), None)
+
+    def _edit_annotation(self, page: int, xref: int) -> None:
+        info = self._find_annotation(page, xref)
+        if info is None or not info.movable:
+            return
+        title = "Editar nota" if info.kind == "Text" else "Editar cuadro de texto"
+        text = TextDialog.ask(self, title, info.text)
+        if text is None or text == info.text:
+            return
+        if not text:  # se ha vaciado: lo tratamos como borrar
+            self._delete_annotation(page, xref)
+            return
+        if self._apply(lambda: self._doc.set_annotation_text(page, xref, text)):
+            self._page_changed(page, xref)
+
+    def _move_annotation(self, page: int, xref: int, dx: float, dy: float) -> None:
+        if self._apply(lambda: self._doc.move_annotation(page, xref, dx, dy)):
+            self._page_changed(page, xref)
+
+    def _delete_annotation(self, page: int, xref: int) -> None:
+        if self._apply(lambda: self._doc.delete_annotation(page, xref)):
+            self._page_changed(page)
+            self.statusBar().showMessage(
+                "Anotación borrada. Si te has equivocado, cierra sin guardar.", 5000)
+
+    def _show_annotation(self, info) -> None:
+        self.view.show_annotation(info)
+        self.view.setFocus()  # así Supr borra la anotación marcada
 
     # ---- Guardar -----------------------------------------------------------
 
@@ -367,6 +447,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No se pudo guardar", str(exc))
             return False
         self._last_dir = str(self._doc.path.parent)
+        # Al guardar, los objetos del PDF pueden renumerarse: leemos de nuevo la lista.
+        self.view.select_annotation(None)
+        self.side_panel.set_annotations(self._doc.all_annotations())
         self._update_modified()
         self.statusBar().showMessage(f"Guardado en «{self._doc.path.name}»", 4000)
         return True

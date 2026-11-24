@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pymupdf
 
-from .annotations import AnnotationInfo, Color, MarkupKind, TextSelection
+from .annotations import (NOTE_ICON_SIZE, TEXT_BOX_DEFAULT_SIZE, TEXT_BOX_FONT_SIZE,
+                          TEXT_BOX_MIN_SIZE, AnnotationInfo, Color, MarkupKind,
+                          TextSelection)
 from .geometry import scale_for_zoom
 from .search import SearchHit
 
@@ -45,6 +47,11 @@ def _same_file(a: Path, b: Path) -> bool:
         return False
 
 
+def _pale(color: Color) -> Color:
+    """Versión muy clara de un color, para fondos sobre los que se lee texto negro."""
+    return tuple(0.8 + 0.2 * c for c in color)
+
+
 def _distance(point: pymupdf.Point, rect: pymupdf.Rect) -> float:
     """Distancia de un punto a un rectángulo (0 si está dentro)."""
     dx = max(rect.x0 - point.x, 0.0, point.x - rect.x1)
@@ -57,6 +64,7 @@ class PdfDocument:
         self.path = Path(path)
         self.modified = False  # hay anotaciones sin guardar
         self._words: dict[int, list] = {}
+        self._annots: dict[int, list[AnnotationInfo]] = {}  # caché por página
         try:
             self._doc = pymupdf.open(self.path)
         except Exception as exc:
@@ -169,18 +177,143 @@ class PdfDocument:
         annot = add(quads)
         annot.set_colors(stroke=color)
         annot.update()
+        self._changed(selection.page)
+
+    def add_note(self, index: int, point: tuple[float, float], text: str,
+                 color: Color) -> int:
+        """Nota adhesiva con el icono centrado en ``point`` (puntos visibles). Devuelve su xref."""
+        page = self._doc[index]
+        half = NOTE_ICON_SIZE / 2
+        # PyMuPDF coloca el icono (siempre derecho) con su esquina visible en este punto.
+        top_left = pymupdf.Point(point[0] - half, point[1] - half) * page.derotation_matrix
+        annot = page.add_text_annot(top_left, text, icon="Note")
+        annot.set_colors(stroke=color)
+        annot.update()
+        self._changed(index)
+        return annot.xref
+
+    def add_text_box(self, index: int, rect: tuple[float, float, float, float], text: str,
+                     color: Color) -> int:
+        """Cuadro de texto en ``rect`` (puntos visibles). Devuelve su xref.
+
+        Un recuadro muy pequeño (un clic sin arrastrar) se amplía a un tamaño por defecto.
+        """
+        page = self._doc[index]
+        x0, y0, x1, y1 = rect
+        x0, x1 = sorted((x0, x1))
+        y0, y1 = sorted((y0, y1))
+        if x1 - x0 < TEXT_BOX_MIN_SIZE or y1 - y0 < TEXT_BOX_MIN_SIZE:
+            x1, y1 = x0 + TEXT_BOX_DEFAULT_SIZE[0], y0 + TEXT_BOX_DEFAULT_SIZE[1]
+        visible = pymupdf.Rect(x0, y0, x1, y1)
+        # Que no se salga de la página: si sobresale, se desplaza hacia dentro.
+        bounds = page.rect
+        dx = min(0.0, bounds.x1 - visible.x1) + max(0.0, bounds.x0 - visible.x0)
+        dy = min(0.0, bounds.y1 - visible.y1) + max(0.0, bounds.y0 - visible.y0)
+        visible = (visible + (dx, dy, dx, dy)) & bounds
+        # Sin texto enriquecido el borde va del color del texto; el color elegido, de fondo.
+        annot = page.add_freetext_annot(
+            visible * page.derotation_matrix, text, fontsize=TEXT_BOX_FONT_SIZE,
+            text_color=(0, 0, 0), fill_color=_pale(color), border_width=1,
+            rotate=page.rotation)  # que el texto se lea derecho en páginas rotadas
+        annot.update()
+        self._changed(index)
+        return annot.xref
+
+    def set_annotation_text(self, index: int, xref: int, text: str) -> None:
+        page = self._doc[index]
+        annot = self._load_annot(page, xref)
+        annot.set_info(content=text)
+        annot.update()  # regenera el aspecto; conserva letra y colores
+        self._changed(index)
+
+    def move_annotation(self, index: int, xref: int, dx: float, dy: float) -> None:
+        """Desplaza una anotación ``dx``, ``dy`` puntos tal como se ve la página."""
+        page = self._doc[index]
+        annot = self._load_annot(page, xref)
+        visible = annot.rect * page.rotation_matrix
+        # Que no se salga de la página: se limita el desplazamiento.
+        bounds = page.rect
+        dx = min(max(dx, bounds.x0 - visible.x0), bounds.x1 - visible.x1)
+        dy = min(max(dy, bounds.y0 - visible.y0), bounds.y1 - visible.y1)
+        moved = visible + (dx, dy, dx, dy)
+        target = moved * page.derotation_matrix
+        annot.set_rect(target)
+        # Los iconos de nota no giran con la página y PyMuPDF los ancla por la esquina
+        # de la página sin rotar: en páginas rotadas quedan desplazados. Medimos dónde
+        # han caído y corregimos (es un desfase fijo, basta con una corrección).
+        actual = annot.rect * page.rotation_matrix
+        error = pymupdf.Point(moved.x0 - actual.x0, moved.y0 - actual.y0)
+        if abs(error) > 0.01:
+            shift = error * page.derotation_matrix - pymupdf.Point(0, 0) * page.derotation_matrix
+            annot.set_rect(target + (shift.x, shift.y, shift.x, shift.y))
+        annot.update()
+        self._changed(index)
+
+    def delete_annotation(self, index: int, xref: int) -> None:
+        page = self._doc[index]
+        page.delete_annot(self._load_annot(page, xref))  # borra también su ventana emergente
+        self._changed(index)
+
+    @staticmethod
+    def _load_annot(page, xref: int):
+        try:
+            annot = page.load_annot(xref)
+        except Exception:  # PyMuPDF lanza su propia excepción si el xref no es de la página
+            annot = None
+        if annot is None:
+            raise KeyError(f"No hay ninguna anotación {xref} en la página {page.number + 1}")
+        return annot
+
+    def _changed(self, index: int) -> None:
         self.modified = True
+        self._annots.pop(index, None)
 
     def annotations(self, index: int) -> list[AnnotationInfo]:
         """Anotaciones de la página ``index`` (todas, también las que ya traía el PDF)."""
+        if index not in self._annots:
+            self._annots[index] = self._read_annotations(index)
+        return list(self._annots[index])
+
+    def _read_annotations(self, index: int) -> list[AnnotationInfo]:
+        # Mirar si la página tiene la clave /Annots es mucho más rápido que cargarla.
+        if self._doc.xref_get_key(self._doc.page_xref(index), "Annots")[0] == "null":
+            return []
         page = self._doc[index]
         result = []
-        for annot in page.annots():
+        for annot in page.annots():  # no incluye las ventanas emergentes (Popup)
             stroke = annot.colors.get("stroke") or None
             rect = annot.rect * page.rotation_matrix
+            text = annot.info.get("content", "").strip()
+            if not text and annot.vertices:
+                text = self._marked_text(page, annot.vertices)
             result.append(AnnotationInfo(index, annot.type[1],
-                                         tuple(stroke) if stroke else None, tuple(rect)))
+                                         tuple(stroke) if stroke else None,
+                                         tuple(rect), annot.xref, text))
         return result
+
+    @staticmethod
+    def _marked_text(page, vertices) -> str:
+        """Texto debajo de un resaltado/subrayado/tachado (sus cuadriláteros, de 4 en 4)."""
+        parts = []
+        for i in range(0, len(vertices) - 3, 4):
+            rect = pymupdf.Quad(vertices[i:i + 4]).rect
+            parts.append(" ".join(page.get_textbox(rect).split()))
+        return " ".join(part for part in parts if part)
+
+    def all_annotations(self) -> list[AnnotationInfo]:
+        """Todas las anotaciones del documento, por orden de página."""
+        return [a for i in range(self.page_count) for a in self.annotations(i)]
+
+    def annotation_at(self, index: int, point: tuple[float, float],
+                      movable_only: bool = False,
+                      tolerance: float = 2.0) -> AnnotationInfo | None:
+        """La anotación de más arriba bajo ``point`` (puntos visibles), si hay alguna."""
+        for info in reversed(self.annotations(index)):  # las últimas se pintan encima
+            if movable_only and not info.movable:
+                continue
+            if info.contains(point[0], point[1], tolerance):
+                return info
+        return None
 
     # ---- Guardar -----------------------------------------------------------
 
@@ -204,6 +337,7 @@ class PdfDocument:
             raise DocumentError(f"No se pudo guardar «{target.name}»: {exc}") from exc
         self.path = target
         self.modified = False
+        self._annots.clear()  # al guardar se pueden renumerar los objetos (xref)
 
     def _save_over_open_file(self, target: Path) -> None:
         """Windows no deja sobrescribir un archivo abierto: guardamos aparte y lo sustituimos."""
