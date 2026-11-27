@@ -1,5 +1,6 @@
 """Ventana principal."""
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
@@ -23,11 +24,15 @@ from .text_dialog import TextDialog
 from .search_bar import SearchBar
 from .side_panel import SidePanel
 from .toolbars import CustomizeDialog, ToolBar, ToolbarPrefs
+from .windows_dialog import DoubleClickDialog
 from . import theme
 from .widgets import Pill, SegmentedControl, TitleBlock, Toast
 
 APP_NAME = "Anotador PDF"
 SETTINGS_ORG = "AnotadorPDF"  # nombre para guardar las preferencias (registro de Windows)
+# Si existe, las preferencias van a un archivo en esa carpeta en vez de al registro
+# (para llevar la app en un USB, o para probarla sin tocar las preferencias reales).
+SETTINGS_DIR_ENV = "ANOTADOR_SETTINGS_DIR"
 ZOOM_PRESETS = [50, 75, 100, 125, 150, 200, 300, 400]  # en %
 FIT_WIDTH_TEXT = "Ajustar al ancho"
 
@@ -113,13 +118,20 @@ class MainWindow(QMainWindow):
         self.side_panel.annotationActivated.connect(self._show_annotation)
         self.side_panel.annotationDeleteRequested.connect(self._delete_annotation)
 
-        # Formato por defecto (en Windows, el registro); las pruebas pueden cambiarlo.
-        self._settings = QSettings(QSettings.defaultFormat(), QSettings.UserScope,
-                                   SETTINGS_ORG, APP_NAME)
+        self._settings = self._open_settings()
         self.act_night.setChecked(self._settings.value("night_mode", False, type=bool))
         self._apply_toolbar_prefs(self._load_toolbar_prefs())
         self._rebuild_recent_menu()
         self._update_ui()
+
+    @staticmethod
+    def _open_settings() -> QSettings:
+        folder = os.environ.get(SETTINGS_DIR_ENV)
+        if folder:
+            return QSettings(str(Path(folder) / "AnotadorPDF.ini"), QSettings.IniFormat)
+        # Formato por defecto (en Windows, el registro); las pruebas pueden cambiarlo.
+        return QSettings(QSettings.defaultFormat(), QSettings.UserScope,
+                         SETTINGS_ORG, APP_NAME)
 
     # ---- Construcción ------------------------------------------------------
 
@@ -220,6 +232,11 @@ class MainWindow(QMainWindow):
                                    "(Ctrl+Mayús+A)")
         self.act_markup.toggled.connect(self._set_markup_visible)
 
+        self.act_double_click = QAction("Abrir PDFs con &doble clic…", self)
+        self.act_double_click.setToolTip("Registrar Anotador PDF en Windows para abrir los "
+                                         "PDF con doble clic")
+        self.act_double_click.triggered.connect(self.show_double_click_dialog)
+
         self.act_customize = QAction("&Personalizar barras de herramientas…", self)
         self.act_customize.triggered.connect(self.customize_toolbars)
 
@@ -247,6 +264,8 @@ class MainWindow(QMainWindow):
         self.recent_menu = file_menu.addMenu("Abrir &reciente")
         file_menu.addAction(self.act_save)
         file_menu.addAction(self.act_save_as)
+        file_menu.addSeparator()
+        file_menu.addAction(self.act_double_click)
         file_menu.addSeparator()
         file_menu.addAction(self.act_quit)
 
@@ -283,6 +302,7 @@ class MainWindow(QMainWindow):
             self.app_menu.addMenu(menu)
         self.app_menu.addSeparator()
         self.app_menu.addAction(self.act_customize)
+        self.app_menu.addAction(self.act_double_click)
         self.app_menu.addAction(self.act_menu_bar)
         self.app_menu.addSeparator()
         self.app_menu.addAction(self.act_quit)
@@ -428,6 +448,9 @@ class MainWindow(QMainWindow):
 
     def _set_menu_bar_visible(self, visible: bool) -> None:
         self._change_toolbar_prefs(menu_bar=visible)
+
+    def show_double_click_dialog(self) -> None:
+        DoubleClickDialog(self).exec()
 
     def _set_markup_visible(self, visible: bool) -> None:
         """Al volver a mostrarlas, las herramientas vuelven a donde estaban."""
