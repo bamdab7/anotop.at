@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QProgressBar, QPush
 
 from anotador import APP_NAME, GITHUB_REPO, __version__
 from anotador.core.updates import (ASSET_NAME, download, fetch_latest_release, is_newer,
-                                   looks_like_exe, updater_script)
+                                   looks_like_exe, updater_environment, updater_script)
 
 from .windows_dialog import running_exe
 
@@ -45,7 +45,8 @@ def launch_updater(script: Path) -> None:
     flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
                       "-WindowStyle", "Hidden", "-File", str(script)],
-                     creationflags=flags, close_fds=True)
+                     creationflags=flags, close_fds=True,
+                     env=updater_environment(os.environ))
 
 
 def app_pids() -> list[int]:

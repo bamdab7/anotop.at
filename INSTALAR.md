@@ -119,6 +119,11 @@ antivirus.
 Repite el paso 4 (punto 2) y vuelve a intentarlo. Si acabas de registrarlo, a veces hay
 que cerrar y volver a abrir el Explorador.
 
+**Después de actualizar, el programa no se vuelve a abrir solo.**
+La actualización sí se ha instalado: ábrelo tú con doble clic y ya tendrás la versión
+nueva. Pasa al actualizar desde las versiones 1.1.0 y 1.2.0, por un fallo que está
+corregido a partir de la 1.2.1.
+
 **¿El modo noche cambia mi PDF?**
 No. El modo noche (Ctrl+I) solo oscurece la página en la pantalla de Anotop.at. Al guardar,
 el PDF conserva sus colores originales, y en otros lectores se ve como siempre.

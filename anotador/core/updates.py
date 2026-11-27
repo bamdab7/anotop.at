@@ -146,5 +146,25 @@ try {{
 }}
 
 # 5. Volver a abrir la app (Start-Process no admite rutas con corchetes, esto sí).
+#    Antes se quitan las variables internas de PyInstaller que este script heredó de
+#    la app: con ellas, el .exe nuevo se cree parte de la app ya cerrada y no arranca.
+Get-ChildItem Env: | Where-Object {{ $_.Name -like '_PYI_*' -or $_.Name -like '_MEIPASS*' }} |
+    ForEach-Object {{ Remove-Item -LiteralPath "Env:$($_.Name)" }}
+$env:PYINSTALLER_RESET_ENVIRONMENT = '1'
 if ({'$true' if relaunch else '$false'}) {{ $null = [System.Diagnostics.Process]::Start($exe) }}
 """
+
+
+def updater_environment(environ: dict[str, str]) -> dict[str, str]:
+    """Variables de entorno para el script de actualización.
+
+    Un .exe de un solo archivo (PyInstaller «onefile») pasa a su proceso hijo unas
+    variables internas (``_PYI_*``) que dicen dónde descomprimió el programa. Si el
+    script las hereda, el .exe que vuelve a abrir se cree parte de la app que ya se
+    cerró, busca esa carpeta (ya borrada) y no arranca. Por eso se quitan, y
+    ``PYINSTALLER_RESET_ENVIRONMENT`` le dice al .exe que empiece de cero.
+    """
+    env = {key: value for key, value in environ.items()
+           if not key.upper().startswith(("_PYI_", "_MEIPASS"))}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env

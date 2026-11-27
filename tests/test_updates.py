@@ -6,7 +6,8 @@ import pytest
 
 from anotador import __version__
 from anotador.core.updates import (ASSET_NAME, LEGACY_ASSET_NAME, is_newer, looks_like_exe,
-                                   parse_release, parse_version, updater_script)
+                                   parse_release, parse_version, updater_environment,
+                                   updater_script)
 
 
 def test_parse_version():
@@ -105,3 +106,19 @@ def test_looks_like_exe(tmp_path):
     html.write_bytes(b"<html>error</html>")
     assert not looks_like_exe(html)
     assert not looks_like_exe(tmp_path / "no-existe.exe")
+
+
+def test_updater_environment_drops_pyinstaller_variables():
+    # Lo que hereda el script de una app «onefile»: con esto, el .exe que vuelve a
+    # abrir se cree parte de la app ya cerrada y no arranca.
+    env = updater_environment({"PATH": "C:/Windows", "_PYI_ARCHIVE_FILE": "C:/x.exe",
+                               "_PYI_APPLICATION_HOME_DIR": "C:/Temp/_MEI123",
+                               "_PYI_PARENT_PROCESS_LEVEL": "1", "_MEIPASS2": "C:/Temp/_MEI"})
+    assert env == {"PATH": "C:/Windows", "PYINSTALLER_RESET_ENVIRONMENT": "1"}
+
+
+def test_updater_script_clears_pyinstaller_variables_before_relaunch():
+    script = updater_script(r"C:\a.exe", r"C:\b.exe", pids=[1])
+    clear = script.index("_PYI_*")
+    assert script.index("$env:PYINSTALLER_RESET_ENVIRONMENT = '1'") > clear
+    assert script.index("[System.Diagnostics.Process]::Start($exe)") > clear

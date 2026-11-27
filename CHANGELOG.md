@@ -5,6 +5,11 @@ versión en GitHub y lo que se muestra en la app en **Buscar actualizaciones**.
 
 ## Sin publicar
 
+- **Corregido:** después de actualizar, el programa no se volvía a abrir solo (aunque la
+  actualización sí se instalaba). Desde esta versión, las próximas actualizaciones lo
+  vuelven a abrir. Si vienes de la 1.1.0 o la 1.2.0, esta vez ábrelo tú con doble clic
+  cuando termine.
+
 ## 1.2.0
 
 - **Nuevo nombre: Anotop.at** (antes «Anotador PDF»). El programa se llama ahora
