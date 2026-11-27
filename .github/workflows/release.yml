@@ -38,7 +38,7 @@ jobs:
       # La descripción de la Release (y lo que ve la gente en «Buscar actualizaciones»)
       # es el apartado de esta versión en CHANGELOG.md. Si no existe, no se publica.
       - name: Sacar las novedades de CHANGELOG.md
-        run: python tools/release_notes.py $env:GITHUB_REF_NAME > "$env:RUNNER_TEMP\notas.md"
+        run: python tools/release_notes.py $env:GITHUB_REF_NAME "$env:RUNNER_TEMP\notas.md"
 
       - name: Tests
         run: python -m pytest -q
