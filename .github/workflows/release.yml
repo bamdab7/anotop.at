@@ -1,5 +1,5 @@
 # Publica una versión nueva al subir una etiqueta como «v1.1.0».
-# Crea el .exe, lo prueba y sube AnotadorPDF-<versión>-windows.zip a las Releases,
+# Crea el .exe (un solo archivo), lo prueba y sube AnotadorPDF.exe a las Releases,
 # que es de donde la app descarga las actualizaciones. Ver «Publicar una versión» en el README.
 name: Publicar versión
 
@@ -48,11 +48,11 @@ jobs:
           $pdf = "$env:RUNNER_TEMP\prueba.pdf"
           $shot = "$env:RUNNER_TEMP\captura.png"
           python -c "import pymupdf, sys; d = pymupdf.open(); d.new_page().insert_text((50, 80), 'Hola'); d.save(sys.argv[1])" $pdf
-          $p = Start-Process dist\AnotadorPDF\AnotadorPDF.exe -ArgumentList "`"$pdf`"", "--screenshot", "`"$shot`"" -PassThru -Wait
+          $p = Start-Process dist\AnotadorPDF.exe -ArgumentList "`"$pdf`"", "--screenshot", "`"$shot`"" -PassThru -Wait
           if ($p.ExitCode -ne 0 -or -not (Test-Path $shot)) { throw "El .exe no abrió el PDF (código $($p.ExitCode))" }
 
       - name: Publicar la release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/AnotadorPDF-*-windows.zip
+          files: dist/AnotadorPDF.exe
           generate_release_notes: true  # lista de cambios a partir de los commits

@@ -6,9 +6,9 @@ descarga van en un hilo aparte para que la ventana no se congele.
 
 import os
 import subprocess
+import sys
 import tempfile
 import threading
-import zipfile
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QUrl, Signal
@@ -17,8 +17,8 @@ from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QProgressBar, QPush
                                QTextBrowser, QVBoxLayout)
 
 from anotador import GITHUB_REPO, __version__
-from anotador.core.updates import (EXE_NAME, INTERNAL, download, fetch_latest_release,
-                                   is_newer, updater_script)
+from anotador.core.updates import (ASSET_NAME, download, fetch_latest_release, is_newer,
+                                   looks_like_exe, updater_script)
 
 from .windows_dialog import running_exe
 
@@ -46,6 +46,20 @@ def launch_updater(script: Path) -> None:
     subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
                       "-WindowStyle", "Hidden", "-File", str(script)],
                      creationflags=flags, close_fds=True)
+
+
+def app_pids() -> list[int]:
+    """Procesos que hay que esperar a que terminen para poder sustituir el .exe.
+
+    Un .exe de un solo archivo (PyInstaller «onefile») son dos procesos: el que
+    descomprime el programa en una carpeta temporal (y lo tiene bloqueado) y,
+    como hijo suyo, la app. Se reconoce porque esa carpeta temporal no es la del .exe.
+    """
+    pids = [os.getpid()]
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle and Path(bundle).resolve() != Path(sys.executable).resolve().parent:
+        pids.append(os.getppid())
+    return pids
 
 
 class UpdateDialog(QDialog):
@@ -151,17 +165,13 @@ class UpdateDialog(QDialog):
         self.progress.show()
         self.status.setText("Descargando…")
         folder = Path(tempfile.mkdtemp(prefix="anotador-actualizacion-"))
-        url = self._release.download_url
+        url, size = self._release.download_url, self._release.size
 
         def work():
-            archive = folder / "nueva.zip"
-            self._download(url, archive, self._bridge.progress.emit)
-            with zipfile.ZipFile(archive) as zf:
-                zf.extractall(folder)
-            archive.unlink()
-            new = folder / "AnotadorPDF"
-            if not (new / EXE_NAME).is_file() or not (new / INTERNAL).is_dir():
-                raise RuntimeError("la descarga no contiene el programa completo")
+            new = folder / ASSET_NAME
+            self._download(url, new, self._bridge.progress.emit)
+            if not looks_like_exe(new, size):
+                raise RuntimeError("la descarga está incompleta o no es el programa")
             return new
 
         self._bridge.done.connect(self._on_downloaded, Qt.SingleShotConnection)
@@ -181,10 +191,9 @@ class UpdateDialog(QDialog):
             self.status.setText(f"No se pudo descargar la actualización.<br><small>{error}"
                                 "</small>")
             return
-        install_dir = Path(self._exe).parent
         script = new.parent / "actualizar.ps1"
         # Con BOM: si no, PowerShell 5 lee mal las tildes de las rutas («Año», «Peña»…).
-        script.write_text(updater_script(str(install_dir), str(new), os.getpid()),
+        script.write_text(updater_script(str(self._exe), str(new), app_pids()),
                           encoding="utf-8-sig")
         self._launch(script)
         self.status.setText("Instalando… la app se cerrará y se volverá a abrir.")

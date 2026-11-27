@@ -38,9 +38,9 @@ se modifica.
 
 ## Instalación
 
-Para usarlo no hace falta instalar Python ni nada más: descarga el archivo
-`AnotadorPDF-<versión>-windows.zip` de la [última versión](https://github.com/bamdab7/anotador-pdf/releases/latest),
-descomprímelo y abre `AnotadorPDF.exe`.
+Para usarlo no hace falta instalar Python ni nada más: descarga `AnotadorPDF.exe` de la
+[última versión](https://github.com/bamdab7/anotador-pdf/releases/latest) y ábrelo. Es un
+único archivo con todo dentro.
 
 👉 **[Guía de instalación paso a paso](INSTALAR.md)**, pensada para quien no tenga
 experiencia: incluye cómo abrir los PDF con doble clic, cómo actualizar y cómo
@@ -100,7 +100,7 @@ Algunas decisiones de diseño:
 ```powershell
 $env:QT_QPA_PLATFORM = "offscreen"
 $env:ANOTADOR_SETTINGS_DIR = "$env:TEMP\anotador-prueba"   # no tocar tus preferencias
-dist\AnotadorPDF\AnotadorPDF.exe ejemplo.pdf --screenshot captura.png
+dist\AnotadorPDF.exe ejemplo.pdf --screenshot captura.png
 ```
 
 `ANOTADOR_SETTINGS_DIR` hace que las preferencias se guarden en un archivo de esa carpeta
@@ -117,7 +117,7 @@ en lugar del registro de Windows; también sirve para llevar la app en un USB.
 3. GitHub Actions comprueba que la etiqueta coincide con `__version__`, pasa los tests,
    crea el .exe, lo prueba abriendo un PDF y publica la versión en
    [Releases](https://github.com/bamdab7/anotador-pdf/releases) con el archivo
-   `AnotadorPDF-1.1.0-windows.zip`. Puedes editar después la descripción de la versión: es
+   `AnotadorPDF.exe`. Puedes editar después la descripción de la versión: es
    lo que verá la gente en «Buscar actualizaciones».
 
 Las actualizaciones desde la app solo funcionan si el repositorio es **público**: la app

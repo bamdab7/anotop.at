@@ -3,8 +3,8 @@
 import pytest
 
 from anotador import __version__
-from anotador.core.updates import (is_newer, parse_release, parse_version, updater_script,
-                                   zip_name)
+from anotador.core.updates import (ASSET_NAME, is_newer, looks_like_exe, parse_release,
+                                   parse_version, updater_script)
 
 
 def test_parse_version():
@@ -37,37 +37,53 @@ RELEASE = {
     "assets": [
         {"name": "fuentes.tar.gz", "browser_download_url": "https://x/fuentes.tar.gz",
          "size": 10},
-        {"name": "AnotadorPDF-1.2.0-windows.zip",
-         "browser_download_url": "https://x/AnotadorPDF-1.2.0-windows.zip", "size": 5000},
+        {"name": "AnotadorPDF-1.0.0-windows.zip",  # formato antiguo (carpeta): se ignora
+         "browser_download_url": "https://x/AnotadorPDF-1.0.0-windows.zip", "size": 9},
+        {"name": "AnotadorPDF.exe",
+         "browser_download_url": "https://x/AnotadorPDF.exe", "size": 5000},
     ],
 }
 
 
-def test_parse_release_picks_windows_zip():
+def test_parse_release_picks_windows_exe():
     release = parse_release(RELEASE)
     assert release.version == "1.2.0"
-    assert release.download_url == "https://x/AnotadorPDF-1.2.0-windows.zip"
+    assert release.download_url == "https://x/AnotadorPDF.exe"
     assert release.size == 5000
     assert "Imprimir" in release.notes
-    assert zip_name(release.version) == "AnotadorPDF-1.2.0-windows.zip"
+    assert ASSET_NAME == "AnotadorPDF.exe"  # tools/build_exe.py y release.yml usan este nombre
 
 
-def test_release_without_zip():
+def test_release_without_exe():
     release = parse_release({"tag_name": "v1.3.0", "assets": []})
     assert release.download_url is None and release.notes == ""
 
 
-def test_updater_script_only_touches_program_files():
-    script = updater_script(r"C:\Users\ana\Desktop", r"C:\Temp\upd\AnotadorPDF", pid=1234)
-    assert "Wait-Process -Id 1234" in script
-    # Solo se apartan/borran el .exe y _internal, nunca la carpeta de instalación entera.
-    assert "Remove-Item $install" not in script
-    assert "Rename-Item $install" not in script
-    assert script.count("Rename-Item $internal ") == 1 and script.count("Rename-Item $exe ") == 1
-    assert "Start-Process $exe" in script
+def test_updater_script_only_touches_the_exe():
+    script = updater_script(r"C:\Users\ana\Desktop\Anotador.exe",
+                            r"C:\Temp\upd\AnotadorPDF.exe", pids=[1234, 99])
+    assert "Wait-Process -Id 1234,99" in script
+    assert r"$exe = 'C:\Users\ana\Desktop\Anotador.exe'" in script  # respeta el nombre
+    # Solo se aparta el .exe, nunca la carpeta donde está (aquí, el Escritorio).
+    assert script.count("Move-Item -LiteralPath $exe ") == 1
+    assert "Desktop'" not in script and "Split-Path $exe" not in script
+    assert "[System.Diagnostics.Process]::Start($exe)" in script
 
 
 def test_updater_script_quotes_paths():
-    script = updater_script(r"C:\Users\O'Brien\Anotador PDF", r"C:\Temp\nuevo", pid=1)
-    assert r"$install = 'C:\Users\O''Brien\Anotador PDF'" in script  # comilla escapada
-    assert "if ($false)" in updater_script("C:\\a", "C:\\b", pid=1, relaunch=False)
+    script = updater_script(r"C:\Users\O'Brien\Anotador [PDF]\AnotadorPDF.exe",
+                            r"C:\Temp\nuevo.exe", pids=[1])
+    assert r"$exe = 'C:\Users\O''Brien\Anotador [PDF]\AnotadorPDF.exe'" in script
+    assert "if ($false)" in updater_script("C:\a.exe", "C:\b.exe", pids=[1], relaunch=False)
+
+
+def test_looks_like_exe(tmp_path):
+    exe = tmp_path / "a.exe"
+    exe.write_bytes(b"MZ" + b"\0" * 98)
+    assert looks_like_exe(exe)
+    assert looks_like_exe(exe, expected_size=100)
+    assert not looks_like_exe(exe, expected_size=200)  # descarga cortada
+    html = tmp_path / "b.exe"
+    html.write_bytes(b"<html>error</html>")
+    assert not looks_like_exe(html)
+    assert not looks_like_exe(tmp_path / "no-existe.exe")

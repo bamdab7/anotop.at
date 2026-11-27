@@ -3,15 +3,13 @@
 Uso (desde la carpeta del proyecto):
     .venv\\Scripts\\python.exe tools\\build_exe.py
 
-Resultado:
-  - dist\\AnotadorPDF\\AnotadorPDF.exe, junto con su carpeta _internal. Para usarla en
-    otro sitio hay que copiar la carpeta AnotadorPDF entera, no solo el .exe.
-  - dist\\AnotadorPDF-<versión>-windows.zip: esa carpeta comprimida. Es lo que se sube a
-    las Releases de GitHub y lo que descarga la app al actualizarse.
+Resultado: dist\\AnotadorPDF.exe, un único archivo con todo dentro (no necesita
+ninguna carpeta al lado). Es lo que se sube a las Releases de GitHub y lo que
+descarga la app al actualizarse.
 
-Se usa el modo «carpeta» (onedir) y no un único .exe (onefile): un único .exe
-tiene que descomprimirse en una carpeta temporal cada vez que se abre, y con
-Qt eso tarda varios segundos.
+Se usa el modo «un solo archivo» (onefile): al abrirse, el .exe descomprime su
+contenido en una carpeta temporal y la borra al cerrarse. Por eso tarda un poco
+más en arrancar que la versión en carpeta.
 """
 
 import shutil
@@ -26,8 +24,9 @@ EXE_NAME = "AnotadorPDF"
 
 sys.path.insert(0, str(ROOT))
 
-# Archivos que PyInstaller incluye por si acaso y que esta app no usa (la carpeta
-# pasa de unos 250 MB a menos de la mitad). Rutas dentro de _internal.
+# Archivos que PyInstaller incluye por si acaso y que esta app no usa (el .exe
+# ocupa menos y arranca antes). Rutas tal como quedan dentro del paquete; una
+# carpeta incluye todo lo que tiene dentro.
 UNUSED = [
     "PySide6/opengl32sw.dll",           # OpenGL por software: la app no usa OpenGL
     "PySide6/Qt6OpenGL.dll",
@@ -105,45 +104,74 @@ VSVersionInfo(
 """, encoding="utf-8")
 
 
-def remove_unused(internal: Path) -> int:
-    """Borra lo de ``UNUSED``. Devuelve los bytes liberados."""
-    freed = 0
-    for pattern in UNUSED:
-        for path in internal.glob(pattern):
-            if path.is_dir():
-                freed += sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
-                shutil.rmtree(path)
-            else:
-                freed += path.stat().st_size
-                path.unlink()
-    return freed
+# El .spec es la «receta» de PyInstaller. Se usa uno propio (y no solo opciones de
+# línea de órdenes) para poder quitar lo de UNUSED antes de empaquetar: en un .exe
+# único no se puede borrar nada después. Lee los datos de build_config.json.
+SPEC = r"""# Generado por tools/build_exe.py: no lo edites a mano.
+import fnmatch
+import json
+from pathlib import Path
+
+config = json.loads(Path(SPECPATH, "build_config.json").read_text(encoding="utf-8"))
 
 
-def missing_dependencies(folder: Path) -> list[str]:
-    """Comprueba que ninguna DLL o módulo que queda necesita algo que no está.
+def unused(dest):
+    dest = dest.replace("\\", "/").lower()
+    for pattern in config["unused"]:
+        pattern = pattern.lower()
+        if fnmatch.fnmatchcase(dest, pattern) or dest.startswith(pattern + "/"):
+            return True
+    return False
 
-    Solo mira las DLL que van dentro de la carpeta (las de Windows, como
-    KERNEL32.dll, no se comprueban: están en todos los equipos).
+
+a = Analysis([config["script"]], pathex=[config["root"]], excludes=config["excludes"])
+removed = [entry for entry in a.binaries + a.datas if unused(entry[0])]
+a.binaries = [entry for entry in a.binaries if not unused(entry[0])]
+a.datas = [entry for entry in a.datas if not unused(entry[0])]
+Path(SPECPATH, "build_report.json").write_text(json.dumps({
+    "removed_bytes": sum(Path(src).stat().st_size for _, src, _ in removed),
+    "binaries": [[dest, src] for dest, src, _ in a.binaries],
+}), encoding="utf-8")
+
+pyz = PYZ(a.pure)
+exe = EXE(pyz, a.scripts, a.binaries, a.datas, [],
+          name=config["name"],
+          console=False,   # sin ventana de consola
+          upx=False,
+          icon=[config["icon"]],
+          version=config["version_file"])
+"""
+
+
+def missing_dependencies(binaries: list[tuple[str, str]]) -> list[str]:
+    """Comprueba que ninguna DLL o módulo que va en el .exe necesita algo que no va.
+
+    ``binaries`` son pares (ruta dentro del paquete, archivo original). Solo mira
+    las DLL de Qt, Python y MuPDF (las de Windows, como KERNEL32.dll, están en
+    todos los equipos).
     """
     import pefile
 
-    files = [f for f in folder.rglob("*") if f.suffix.lower() in (".dll", ".pyd", ".exe")]
-    present = {f.name.lower() for f in files}
+    present = {Path(dest).name.lower() for dest, _ in binaries}
     problems = []
-    for f in files:
-        pe = pefile.PE(str(f), fast_load=True)
+    for dest, src in binaries:
+        if Path(src).suffix.lower() not in (".dll", ".pyd"):
+            continue
+        pe = pefile.PE(src, fast_load=True)
         pe.parse_data_directories(directories=[
             pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]])
         for entry in getattr(pe, "DIRECTORY_ENTRY_IMPORT", []):
             name = entry.dll.decode().lower()
             if (name.startswith(("qt6", "python", "shiboken", "pyside", "mupdf"))
                     and name not in present):
-                problems.append(f"{f.relative_to(folder)} necesita {name}")
+                problems.append(f"{dest} necesita {name}")
         pe.close()
     return problems
 
 
 def main() -> int:
+    import json
+
     import PyInstaller.__main__
 
     BUILD.mkdir(exist_ok=True)
@@ -151,48 +179,48 @@ def main() -> int:
     version = BUILD / "version_info.txt"
     make_ico(icon)
     make_version_file(version)
+    (BUILD / "build_config.json").write_text(json.dumps({
+        "script": str(ROOT / "main.py"),
+        "root": str(ROOT),
+        "name": EXE_NAME,
+        "icon": str(icon),
+        "version_file": str(version),
+        "unused": UNUSED,
+        # Cosas que no usa la app y que, si no, se colarían y engordarían el .exe.
+        # (yaml: numpy lo importa solo si está instalado.)
+        "excludes": ["tkinter", "pytest", "PyInstaller", "yaml"],
+    }), encoding="utf-8")
+    spec = BUILD / f"{EXE_NAME}.spec"
+    spec.write_text(SPEC, encoding="utf-8")
+
+    # Restos de cuando el programa era una carpeta (versión 1.0.0).
+    shutil.rmtree(DIST / EXE_NAME, ignore_errors=True)
+    for old in DIST.glob(f"{EXE_NAME}-*-windows.zip"):
+        old.unlink()
 
     PyInstaller.__main__.run([
-        str(ROOT / "main.py"),
-        "--name", EXE_NAME,
-        "--windowed",              # sin ventana de consola
-        "--noconfirm",             # sobrescribe dist\AnotadorPDF sin preguntar
+        str(spec),
+        "--noconfirm",             # sobrescribe dist\AnotadorPDF.exe sin preguntar
         "--clean",
-        "--icon", str(icon),
-        "--version-file", str(version),
         "--distpath", str(DIST),
         "--workpath", str(BUILD / "pyinstaller"),
-        "--specpath", str(BUILD),
-        # Cosas que no usa la app y que, si no, se colarían y engordarían la carpeta.
-        "--exclude-module", "tkinter",
-        "--exclude-module", "pytest",
-        "--exclude-module", "PyInstaller",
-        "--exclude-module", "yaml",  # numpy lo importa solo si está instalado
     ])
-    exe = DIST / EXE_NAME / f"{EXE_NAME}.exe"
+    exe = DIST / f"{EXE_NAME}.exe"
     if not exe.exists():
         print("No se ha generado el .exe; mira los mensajes de arriba.")
         return 1
-    freed = remove_unused(exe.parent / "_internal")
-    problems = missing_dependencies(exe.parent)
+    report = json.loads((BUILD / "build_report.json").read_text(encoding="utf-8"))
+    problems = missing_dependencies(report["binaries"])
     if problems:
+        exe.unlink()
         print("Faltan dependencias tras quitar lo que no se usa:")
         for problem in problems:
             print("  " + problem)
         return 1
-    from anotador import __version__
-    from anotador.core.updates import zip_name
 
-    archive = DIST / zip_name(__version__)
-    archive.unlink(missing_ok=True)
-    shutil.make_archive(str(archive.with_suffix("")), "zip", root_dir=DIST, base_dir=EXE_NAME)
-
-    size = sum(f.stat().st_size for f in exe.parent.rglob("*") if f.is_file())
     print()
-    print(f"Listo: {exe}")
-    print(f"Tamaño de la carpeta: {size / 1e6:.0f} MB "
-          f"(se han quitado {freed / 1e6:.0f} MB que la app no usa)")
-    print(f"Para publicar: {archive} ({archive.stat().st_size / 1e6:.0f} MB)")
+    print(f"Listo: {exe} ({exe.stat().st_size / 1e6:.0f} MB, un solo archivo)")
+    print(f"Se han dejado fuera {report['removed_bytes'] / 1e6:.0f} MB que la app no usa.")
     return 0
 
 

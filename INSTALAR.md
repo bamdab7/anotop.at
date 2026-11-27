@@ -12,42 +12,28 @@ unos cinco minutos. No hace falta instalar nada más ni ser administrador del or
 1. Entra en la página de la última versión:
    **https://github.com/bamdab7/anotador-pdf/releases/latest**
 2. Baja hasta el apartado **Assets** (archivos).
-3. Haz clic en el archivo que se llama **`AnotadorPDF-…-windows.zip`** (los puntos
-   suspensivos son el número de versión, por ejemplo `AnotadorPDF-1.0.0-windows.zip`).
-   Ocupa unos 60 MB.
+3. Haz clic en **`AnotadorPDF.exe`**. Ocupa unos 60 MB.
 
    > No descargues los que se llaman «Source code»: son el código fuente, para
    > programadores.
 
-El archivo se guarda en tu carpeta **Descargas**.
+El archivo se guarda en tu carpeta **Descargas**. Ese único archivo es el programa
+entero: no hay que descomprimir ni instalar nada.
 
-## 2. Descomprimir
+> Si el navegador avisa de que «no se descarga habitualmente», elige **Conservar** (en
+> Edge, pulsa **⋯** junto al aviso › **Conservar**).
 
-El archivo descargado es un `.zip`: una carpeta comprimida. Hay que «extraerla» antes de
-usarla.
+## 2. Dejarlo en un sitio fijo
 
-1. Abre la carpeta **Descargas** (en el Explorador de archivos, o desde el navegador con
-   «Mostrar en carpeta»).
-2. Haz **clic derecho** sobre `AnotadorPDF-…-windows.zip` y elige **Extraer todo…**.
-3. En la ventana que aparece, pulsa **Extraer**.
+Mueve **AnotadorPDF.exe** a un lugar donde no lo vayas a borrar por error, por ejemplo a
+**Documentos**: arrástralo desde Descargas hasta «Documentos» en la columna de la
+izquierda del Explorador.
 
-Aparece una carpeta nueva y, dentro, otra llamada **AnotadorPDF**. Esa es el programa.
+## 3. Abrirlo por primera vez
 
-> ⚠️ No abras el programa desde dentro del `.zip` sin extraerlo: no funcionaría.
-
-## 3. Dejarlo en un sitio fijo
-
-Mueve la carpeta **AnotadorPDF** a un lugar donde no la vayas a borrar por error, por
-ejemplo a **Documentos**: arrástrala desde Descargas hasta «Documentos» en la columna de
-la izquierda del Explorador.
-
-> Mueve siempre la carpeta **entera**. Si sacas solo el archivo `AnotadorPDF.exe`, el
-> programa no arranca: necesita la carpeta `_internal` que hay a su lado.
-
-## 4. Abrirlo por primera vez
-
-1. Entra en la carpeta **AnotadorPDF** y haz doble clic en **AnotadorPDF.exe** (el del
-   icono azul con una hoja).
+1. Haz doble clic en **AnotadorPDF.exe** (el del icono azul con una hoja). Tarda un par
+   de segundos en aparecer: cada vez que se abre, prepara sus archivos en una carpeta
+   temporal.
 2. Es posible que Windows muestre un aviso azul: **«Windows protegió su PC»**. Sale con
    los programas que no han pagado un certificado de firma, no porque tenga nada malo.
    Para continuar:
@@ -58,13 +44,13 @@ la izquierda del Explorador.
 
 ### Crear un acceso directo (opcional)
 
-Para no tener que buscar la carpeta cada vez:
+Para no tener que buscar el archivo cada vez:
 
 - **En el menú Inicio:** clic derecho en `AnotadorPDF.exe` › **Anclar a Inicio**.
 - **En el Escritorio:** clic derecho en `AnotadorPDF.exe` › **Mostrar más opciones** (solo
   en Windows 11) › **Enviar a** › **Escritorio (crear acceso directo)**.
 
-## 5. Abrir los PDF con doble clic
+## 4. Abrir los PDF con doble clic
 
 Para que al hacer doble clic en cualquier PDF se abra en Anotador PDF:
 
@@ -81,10 +67,11 @@ decides tú.
 **Otra forma:** en el Explorador, clic derecho sobre cualquier PDF › **Abrir con** ›
 **Elegir otra aplicación** › **Anotador PDF** › **Siempre**.
 
-> Si algún día mueves la carpeta del programa, el doble clic dejará de funcionar: repite
-> el paso 2. En esa misma opción del menú verás el aviso «registrado desde otra carpeta».
+> Si algún día mueves o renombras `AnotadorPDF.exe`, el doble clic dejará de funcionar:
+> repite el punto 2. En esa misma opción del menú verás el aviso «registrado desde otra
+> carpeta».
 
-## 6. Actualizar a una versión nueva
+## 5. Actualizar a una versión nueva
 
 1. En el programa, pulsa **⋯** › **Buscar actualizaciones…**.
 2. Si hay una versión nueva, verás qué trae. Pulsa **Descargar e instalar**.
@@ -96,19 +83,24 @@ la actualización, se mantiene la versión que tenías.
 
 El programa solo se conecta a Internet cuando pulsas «Buscar actualizaciones».
 
-## 7. Desinstalar
+> **Si tienes la versión 1.0.0** (la que venía en una carpeta con `_internal`), esta vez
+> tendrás que actualizar a mano: descarga `AnotadorPDF.exe` (paso 1), cierra el programa
+> y borra la carpeta antigua **AnotadorPDF**. Después repite el punto 2 del paso 4. Las
+> siguientes actualizaciones ya serán automáticas.
+
+## 6. Desinstalar
 
 1. En el programa: **⋯** › **Abrir PDFs con doble clic…** › **Quitar el registro**.
-2. Cierra el programa y borra la carpeta **AnotadorPDF**.
+2. Cierra el programa y borra el archivo **AnotadorPDF.exe**.
 3. Borra también los accesos directos que hubieras creado.
 
 ---
 
 ## Problemas frecuentes
 
-**Al hacer doble clic en `AnotadorPDF.exe` no pasa nada o sale un error.**
-Comprueba que extrajiste el `.zip` (paso 2) y que junto al `.exe` está la carpeta
-`_internal`.
+**Al hacer doble clic en `AnotadorPDF.exe` no pasa nada.**
+Espera unos segundos: al abrirse tiene que preparar sus archivos. Si sigue sin aparecer,
+mira si el antivirus lo ha bloqueado (siguiente punto).
 
 **El antivirus lo bloquea o lo pone en cuarentena.**
 A veces los antivirus desconfían de los programas hechos con Python que no están firmados.
@@ -116,7 +108,7 @@ Si lo has descargado de la página oficial (paso 1), puedes marcarlo como seguro
 antivirus.
 
 **Anotador PDF no aparece en «Abrir con».**
-Repite el paso 5 (punto 2) y vuelve a intentarlo. Si acabas de registrarlo, a veces hay
+Repite el paso 4 (punto 2) y vuelve a intentarlo. Si acabas de registrarlo, a veces hay
 que cerrar y volver a abrir el Explorador.
 
 **¿Dónde se guardan mis anotaciones?**
