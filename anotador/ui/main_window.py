@@ -71,6 +71,10 @@ class MainWindow(QMainWindow):
         self.view.moveRequested.connect(self._move_annotation)
         self.view.editRequested.connect(self._edit_annotation)
         self.view.deleteRequested.connect(self._delete_annotation)
+        self.view.inkRequested.connect(self._create_ink)
+        self.view.eraseRequested.connect(self._erase_ink)
+        self.annotate_bar.penChanged.connect(self.view.set_pen)
+        self.view.set_pen(self.annotate_bar.color, self.annotate_bar.pen_width)
         self.view.annotationSelected.connect(self.side_panel.select_annotation)
         self.side_panel.annotationActivated.connect(self._show_annotation)
         self.side_panel.annotationDeleteRequested.connect(self._delete_annotation)
@@ -381,6 +385,15 @@ class MainWindow(QMainWindow):
                                                           self.annotate_bar.color))
         if xref:
             self._page_changed(page, xref)
+
+    def _create_ink(self, page: int, points) -> None:
+        if self._apply(lambda: self._doc.add_ink(page, [points], self.annotate_bar.color,
+                                                 self.annotate_bar.pen_width)):
+            self._page_changed(page)
+
+    def _erase_ink(self, page: int, start, end, radius: float) -> None:
+        if self._apply(lambda: self._doc.erase_ink(page, start, end, radius)):
+            self._page_changed(page)  # solo si se ha borrado algo
 
     def _find_annotation(self, page: int, xref: int):
         return next((a for a in self._doc.annotations(page) if a.xref == xref), None)

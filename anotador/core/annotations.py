@@ -22,6 +22,7 @@ MARKUP_COLORS: list[tuple[str, Color]] = [
     ("Azul", (0.35, 0.7, 1.0)),
     ("Rosa", (1.0, 0.5, 0.75)),
     ("Rojo", (0.95, 0.2, 0.2)),
+    ("Negro", (0.0, 0.0, 0.0)),
 ]
 
 
@@ -50,6 +51,15 @@ TEXT_BOX_FONT_SIZE = 12.0
 TEXT_BOX_MIN_SIZE = 20.0   # un arrastre más pequeño crea un cuadro de tamaño por defecto
 TEXT_BOX_DEFAULT_SIZE = (180.0, 50.0)
 
+INK = "Ink"  # dibujo a mano alzada
+# Grosores del lápiz: (nombre para la interfaz, ancho de línea en puntos PDF).
+PEN_WIDTHS: list[tuple[str, float]] = [
+    ("Fino", 1.0),
+    ("Medio", 2.5),
+    ("Grueso", 5.0),
+]
+INK_SIMPLIFY_TOLERANCE = 0.25  # puntos: por debajo de esto no se nota la diferencia
+
 # Nombres para la interfaz de cada subtipo PDF.
 KIND_LABELS = {
     "Highlight": "Resaltado",
@@ -58,7 +68,7 @@ KIND_LABELS = {
     "Squiggly": "Ondulado",
     NOTE: "Nota",
     TEXT_BOX: "Cuadro de texto",
-    "Ink": "Dibujo",
+    INK: "Dibujo",
     "Square": "Rectángulo",
     "Circle": "Elipse",
     "Line": "Línea",

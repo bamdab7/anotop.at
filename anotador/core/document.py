@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pymupdf
 
-from .annotations import (NOTE_ICON_SIZE, TEXT_BOX_DEFAULT_SIZE, TEXT_BOX_FONT_SIZE,
-                          TEXT_BOX_MIN_SIZE, AnnotationInfo, Color, MarkupKind,
-                          TextSelection)
+from .annotations import (INK, INK_SIMPLIFY_TOLERANCE, NOTE_ICON_SIZE,
+                          TEXT_BOX_DEFAULT_SIZE, TEXT_BOX_FONT_SIZE, TEXT_BOX_MIN_SIZE,
+                          AnnotationInfo, Color, MarkupKind, TextSelection)
 from .geometry import scale_for_zoom
+from .ink import Point, Stroke, simplify_stroke, stroke_touches
 from .search import SearchHit
 
 
@@ -38,6 +39,8 @@ class RenderedPage:
 
 
 TEMP_SUFFIX = ".guardando~"
+_TEXT_MARKUP_TYPES = {pymupdf.PDF_ANNOT_HIGHLIGHT, pymupdf.PDF_ANNOT_UNDERLINE,
+                      pymupdf.PDF_ANNOT_STRIKE_OUT, pymupdf.PDF_ANNOT_SQUIGGLY}
 
 
 def _same_file(a: Path, b: Path) -> bool:
@@ -59,12 +62,22 @@ def _distance(point: pymupdf.Point, rect: pymupdf.Rect) -> float:
     return (dx * dx + dy * dy) ** 0.5
 
 
+@dataclass(frozen=True)
+class _InkStrokes:
+    """Una anotación Ink de una página: sus trazos en coordenadas de la página sin rotar."""
+
+    xref: int
+    width: float
+    strokes: tuple[Stroke, ...]
+
+
 class PdfDocument:
     def __init__(self, path):
         self.path = Path(path)
         self.modified = False  # hay anotaciones sin guardar
         self._words: dict[int, list] = {}
         self._annots: dict[int, list[AnnotationInfo]] = {}  # caché por página
+        self._inks: dict[int, list[_InkStrokes]] = {}  # trazos para la goma, por página
         try:
             self._doc = pymupdf.open(self.path)
         except Exception as exc:
@@ -219,6 +232,82 @@ class PdfDocument:
         self._changed(index)
         return annot.xref
 
+    def add_ink(self, index: int, strokes: list[Stroke], color: Color, width: float) -> int:
+        """Dibujo a mano alzada: anotación Ink con ``strokes`` (puntos visibles). Devuelve su xref.
+
+        Cada trazo es la lista de puntos por los que pasó el lápiz; se simplifica
+        para no guardar puntos que no cambian la forma.
+        """
+        page = self._doc[index]
+        derotate = page.derotation_matrix
+        ink_list = []
+        for stroke in strokes:
+            if not stroke:
+                continue
+            points = simplify_stroke([tuple(p) for p in stroke], INK_SIMPLIFY_TOLERANCE)
+            if len(points) == 1:
+                points = points * 2  # un clic sin mover: un punto (con extremos redondos)
+            ink_list.append([tuple(pymupdf.Point(p) * derotate) for p in points])
+        if not ink_list:
+            raise ValueError("El dibujo no tiene ningún punto")
+        annot = page.add_ink_annot(ink_list)
+        annot.set_border(width=width)
+        annot.set_colors(stroke=color)
+        annot.update()
+        self._changed(index)
+        return annot.xref
+
+    def _ink_strokes(self, index: int) -> list[_InkStrokes]:
+        if index not in self._inks:
+            page = self._doc[index]
+            self._inks[index] = [
+                _InkStrokes(annot.xref, annot.border.get("width") or 1.0,
+                            tuple([tuple(p) for p in stroke] for stroke in annot.vertices or []))
+                for annot in page.annots(types=[pymupdf.PDF_ANNOT_INK])
+            ] if any(info.kind == INK for info in self.annotations(index)) else []
+        return self._inks[index]
+
+    def erase_ink(self, index: int, start: Point, end: Point, radius: float) -> int:
+        """Goma: borra los trazos enteros que pasan a ``radius`` puntos o menos del
+        recorrido ``start``–``end`` (puntos visibles). Devuelve cuántos ha borrado.
+
+        Si una anotación Ink tiene varios trazos (p. ej. hecha con otro programa),
+        solo se quitan los tocados; si no le queda ninguno, se borra la anotación.
+        """
+        page = self._doc[index]
+        derotate = page.derotation_matrix
+        a = tuple(pymupdf.Point(start) * derotate)
+        b = tuple(pymupdf.Point(end) * derotate)
+        erased = 0
+        for ink in self._ink_strokes(index):
+            tolerance = radius + ink.width / 2
+            keep = [s for s in ink.strokes if not stroke_touches(s, a, b, tolerance)]
+            if len(keep) == len(ink.strokes):
+                continue
+            erased += len(ink.strokes) - len(keep)
+            annot = self._load_annot(page, ink.xref)
+            if keep:
+                self._set_ink_list(page, annot, keep)
+            else:
+                page.delete_annot(annot)
+        if erased:
+            self._changed(index)
+        return erased
+
+    def _set_ink_list(self, page, annot, strokes: list[Stroke]) -> None:
+        """Sustituye los trazos de una anotación Ink, conservando color, grosor, autor…"""
+        to_pdf = ~page.transformation_matrix  # de coordenadas PyMuPDF a las del archivo PDF
+        arrays = []
+        for stroke in strokes:
+            numbers = []
+            for p in stroke:
+                q = pymupdf.Point(p) * to_pdf
+                numbers += [f"{q.x:.3f}", f"{q.y:.3f}"]
+            arrays.append("[" + " ".join(numbers) + "]")
+        self._doc.xref_set_key(annot.xref, "InkList", "[" + "".join(arrays) + "]")
+        annot = page.load_annot(annot.xref)  # que PyMuPDF lea los trazos nuevos
+        annot.update()  # regenera el aspecto y recalcula el recuadro
+
     def set_annotation_text(self, index: int, xref: int, text: str) -> None:
         page = self._doc[index]
         annot = self._load_annot(page, xref)
@@ -267,6 +356,7 @@ class PdfDocument:
     def _changed(self, index: int) -> None:
         self.modified = True
         self._annots.pop(index, None)
+        self._inks.pop(index, None)
 
     def annotations(self, index: int) -> list[AnnotationInfo]:
         """Anotaciones de la página ``index`` (todas, también las que ya traía el PDF)."""
@@ -284,7 +374,7 @@ class PdfDocument:
             stroke = annot.colors.get("stroke") or None
             rect = annot.rect * page.rotation_matrix
             text = annot.info.get("content", "").strip()
-            if not text and annot.vertices:
+            if not text and annot.type[0] in _TEXT_MARKUP_TYPES and annot.vertices:
                 text = self._marked_text(page, annot.vertices)
             result.append(AnnotationInfo(index, annot.type[1],
                                          tuple(stroke) if stroke else None,
@@ -338,6 +428,7 @@ class PdfDocument:
         self.path = target
         self.modified = False
         self._annots.clear()  # al guardar se pueden renumerar los objetos (xref)
+        self._inks.clear()
 
     def _save_over_open_file(self, target: Path) -> None:
         """Windows no deja sobrescribir un archivo abierto: guardamos aparte y lo sustituimos."""

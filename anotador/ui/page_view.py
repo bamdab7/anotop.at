@@ -9,14 +9,16 @@ o, si se acaba de cambiar el zoom, la imagen anterior reescalada.
 from collections import OrderedDict
 from enum import Enum
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import (QColor, QCursor, QGuiApplication, QImage, QKeySequence, QPainter,
+                           QPainterPath, QPen, QPixmap, QPointingDevice)
 from PySide6.QtWidgets import QAbstractScrollArea, QMenu
 
-from anotador.core.annotations import AnnotationInfo, TextSelection
+from anotador.core.annotations import (MARKUP_COLORS, PEN_WIDTHS, AnnotationInfo, Color,
+                                       TextSelection)
 from anotador.core.document import PdfDocument
-from anotador.core.geometry import (clamp_zoom, pixels_to_points, zoom_in, zoom_out,
-                                    zoom_to_fit_width)
+from anotador.core.geometry import (clamp_zoom, pixels_to_points, points_to_pixels, zoom_in,
+                                    zoom_out, zoom_to_fit_width)
 from anotador.core.layout import MARGIN_PX, DocumentPoint, PageLayout
 from anotador.core.search import SearchHit, SearchResults
 
@@ -34,6 +36,9 @@ DRAG_THRESHOLD_PX = 3  # lo que hay que mover el ratón para que cuente como arr
 AUTOSCROLL_STEP_PX = 30
 ANNOT_OUTLINE = QColor(30, 100, 220)
 ANNOT_GHOST_FILL = QColor(30, 100, 220, 40)
+INK_MIN_STEP_PX = 0.75  # puntos más juntos que esto no se añaden al trazo
+ERASER_RADIUS_PX = 8    # tamaño de la goma en pantalla (igual con cualquier zoom)
+TABLET_EVENTS = (QEvent.TabletPress, QEvent.TabletMove, QEvent.TabletRelease)
 
 
 class Tool(Enum):
@@ -42,6 +47,8 @@ class Tool(Enum):
     SELECT = "select"      # seleccionar texto; mover y editar notas y cuadros
     NOTE = "note"          # clic: nueva nota adhesiva
     TEXT_BOX = "text_box"  # arrastrar: nuevo cuadro de texto
+    PEN = "pen"            # dibujar a mano alzada
+    ERASER = "eraser"      # borrar trazos enteros de dibujo
 
 
 class _Drag(Enum):
@@ -50,6 +57,35 @@ class _Drag(Enum):
     MOVE_ANNOT = 2   # moviendo una nota o cuadro
     NEW_BOX = 3      # dibujando un cuadro de texto nuevo
     NEW_NOTE = 4     # clic con la herramienta de nota
+    INK = 5          # dibujando un trazo
+    ERASE = 6        # pasando la goma
+
+
+class _Stroke:
+    """Trazo que se pinta en pantalla: el que se está dibujando o uno recién terminado."""
+
+    __slots__ = ("page", "points", "color", "width")
+
+    def __init__(self, page: int, points: list[tuple[float, float]], color: Color,
+                 width: float):
+        self.page, self.points, self.color, self.width = page, points, color, width
+
+
+def _eraser_cursor() -> QCursor:
+    """Círculo del tamaño de la goma: se ve exactamente qué va a tocar."""
+    size = 2 * ERASER_RADIUS_PX + 3
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    circle = QRectF(1.5, 1.5, 2 * ERASER_RADIUS_PX, 2 * ERASER_RADIUS_PX)
+    painter.setPen(QPen(QColor(255, 255, 255, 220), 3))
+    painter.drawEllipse(circle)
+    painter.setPen(QPen(QColor(40, 40, 40), 1.2))
+    painter.setBrush(QColor(255, 255, 255, 60))
+    painter.drawEllipse(circle)
+    painter.end()
+    return QCursor(pixmap, size // 2, size // 2)
 
 
 class _CachedPage:
@@ -72,6 +108,8 @@ class PageView(QAbstractScrollArea):
     moveRequested = Signal(int, int, float, float)   # página, xref, dx, dy (puntos)
     editRequested = Signal(int, int)                 # página, xref
     deleteRequested = Signal(int, int)               # página, xref
+    inkRequested = Signal(int, object)               # página, [(x, y), …] en puntos
+    eraseRequested = Signal(int, object, object, float)  # página, desde, hasta, radio (puntos)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -89,6 +127,13 @@ class PageView(QAbstractScrollArea):
         self._drag = _Drag.NONE
         self._tool = Tool.SELECT
         self._selected_annot: AnnotationInfo | None = None
+        self._pen_color: Color = MARKUP_COLORS[0][1]
+        self._pen_width = PEN_WIDTHS[0][1]
+        self._stroke: _Stroke | None = None          # trazo en curso
+        self._pending_strokes: list[_Stroke] = []    # terminados, esperando al renderizado
+        self._erase_last: QPointF | None = None      # última posición de la goma (contenido)
+        self._tablet_active = False  # hay un trazo o borrado hecho con el lápiz táctil
+        self._eraser_cursor: QCursor | None = None
 
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -127,6 +172,9 @@ class PageView(QAbstractScrollArea):
         self._search = None
         self._press_page = -1
         self._drag = _Drag.NONE
+        self._stroke = None
+        self._pending_strokes.clear()
+        self._tablet_active = False
         self.clear_selection()
         self.select_annotation(None)
         self.set_tool(Tool.SELECT)
@@ -208,12 +256,28 @@ class PageView(QAbstractScrollArea):
             return
         self._tool = tool
         self._drag = _Drag.NONE
+        self._stroke = None  # Esc a medio trazo lo descarta
+        self._erase_last = None
+        self._tablet_active = False
         if tool != Tool.SELECT:
             self.clear_selection()
             self.select_annotation(None)
-        self.viewport().setCursor(Qt.IBeamCursor if tool == Tool.SELECT else Qt.CrossCursor)
+        self.viewport().setCursor(self._cursor_for_tool(tool))
         self.viewport().update()
         self.toolChanged.emit(tool)
+
+    def _cursor_for_tool(self, tool: Tool):
+        if tool == Tool.SELECT:
+            return Qt.IBeamCursor
+        if tool == Tool.ERASER:
+            if self._eraser_cursor is None:
+                self._eraser_cursor = _eraser_cursor()
+            return self._eraser_cursor
+        return Qt.CrossCursor
+
+    def set_pen(self, color: Color, width: float) -> None:
+        """Color y grosor (en puntos PDF) con que se pinta el trazo mientras se dibuja."""
+        self._pen_color, self._pen_width = color, width
 
     @property
     def selected_annotation(self) -> AnnotationInfo | None:
@@ -377,6 +441,8 @@ class PageView(QAbstractScrollArea):
                        QImage.Format_RGB888).copy()
         image.setDevicePixelRatio(dpr)
         self._cache[index] = _CachedPage(self._zoom, dpr, image)
+        # Los trazos recién terminados ya forman parte de la imagen.
+        self._pending_strokes = [s for s in self._pending_strokes if s.page != index]
         self._cache.move_to_end(index)
         while len(self._cache) > CACHE_SIZE:
             self._cache.popitem(last=False)
@@ -415,6 +481,7 @@ class PageView(QAbstractScrollArea):
             self._paint_hits(painter, i, origin)
         self._paint_selection(painter, origin)
         self._paint_annotation_feedback(painter, origin)
+        self._paint_strokes(painter, origin)
         painter.end()
 
         if needs_render and not self._render_timer.isActive():
@@ -462,6 +529,137 @@ class PageView(QAbstractScrollArea):
             painter.drawRect(QRectF(self._press_content + origin,
                                     self._drag_content + origin).normalized())
 
+    def _paint_strokes(self, painter: QPainter, origin: QPointF) -> None:
+        strokes = self._pending_strokes + ([self._stroke] if self._stroke else [])
+        if not strokes:
+            return
+        visible = self._visible_pages()
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(Qt.NoBrush)
+        for stroke in strokes:
+            if stroke.page not in visible or not stroke.points:
+                continue
+            pen = QPen(QColor.fromRgbF(*stroke.color),
+                       points_to_pixels(stroke.width, self._zoom),
+                       Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            painter.setPen(pen)
+            points = [QPointF(*self._layout.from_document(DocumentPoint(stroke.page, x, y)))
+                      + origin for x, y in stroke.points]
+            if len(points) == 1:
+                painter.drawPoint(points[0])
+                continue
+            path = QPainterPath(points[0])
+            for point in points[1:]:
+                path.lineTo(point)
+            painter.drawPath(path)
+
+    # ---- Lápiz y goma (ratón y lápiz táctil usan el mismo código) ---------
+
+    def _clamped_page_point(self, page: int, content: QPointF) -> tuple[float, float]:
+        """Como ``_page_point``, pero sin salirse de la página."""
+        x, y = self._page_point(page, content)
+        width, height = self._doc.page_sizes[page]
+        return (min(max(x, 0.0), width), min(max(y, 0.0), height))
+
+    def _begin_stroke(self, pos: QPointF) -> None:
+        content = self._content_pos(pos)
+        page = self._layout.page_at_y(content.y())  # el trazo se queda en esta página
+        self._stroke = _Stroke(page, [self._clamped_page_point(page, content)],
+                               self._pen_color, self._pen_width)
+        self._drag = _Drag.INK
+        self.viewport().update()
+
+    def _extend_stroke(self, pos: QPointF) -> None:
+        stroke = self._stroke
+        if stroke is None:
+            return
+        x, y = self._clamped_page_point(stroke.page, self._content_pos(pos))
+        last_x, last_y = stroke.points[-1]
+        step = pixels_to_points(INK_MIN_STEP_PX, self._zoom)
+        if abs(x - last_x) + abs(y - last_y) >= step:
+            stroke.points.append((x, y))
+            self.viewport().update()
+
+    def _finish_stroke(self) -> None:
+        stroke, self._stroke = self._stroke, None
+        self._drag = _Drag.NONE
+        if stroke is None:
+            return
+        # Se sigue viendo hasta que la página se renderiza de nuevo con la anotación.
+        self._pending_strokes.append(stroke)
+        self.inkRequested.emit(stroke.page, list(stroke.points))
+        self.refresh_page(stroke.page)
+
+    def _erase_to(self, pos: QPointF) -> None:
+        """Borra lo que toca la goma desde su posición anterior hasta ``pos``.
+
+        Se comprueba todo el recorrido, no solo los puntos: aunque el ratón vaya
+        rápido y salte de un punto a otro, no se escapa ningún trazo.
+        """
+        content = self._content_pos(pos)
+        page = self._layout.page_at_y(content.y())
+        start = self._erase_last if self._erase_last is not None else content
+        self._erase_last = content
+        self.eraseRequested.emit(page, self._page_point(page, start),
+                                 self._page_point(page, content),
+                                 pixels_to_points(ERASER_RADIUS_PX, self._zoom))
+
+    def _begin_pen_tool(self, tool: Tool, pos: QPointF) -> None:
+        self.setFocus()
+        if tool == Tool.PEN:
+            self._begin_stroke(pos)
+        else:
+            self._drag = _Drag.ERASE
+            self._erase_last = None
+            self._erase_to(pos)
+
+    def _continue_pen_tool(self, pos: QPointF) -> None:
+        if self._drag == _Drag.INK:
+            self._extend_stroke(pos)
+        elif self._drag == _Drag.ERASE:
+            self._erase_to(pos)
+
+    def _end_pen_tool(self) -> None:
+        if self._drag == _Drag.INK:
+            self._finish_stroke()
+        else:
+            self._drag = _Drag.NONE
+            self._erase_last = None
+
+    def viewportEvent(self, event) -> bool:
+        if event.type() in TABLET_EVENTS and self._tablet_event(event):
+            return True
+        return super().viewportEvent(event)
+
+    def _tablet_event(self, event) -> bool:
+        """Lápiz táctil. Devuelve True si lo gestiona; si no, Qt lo convierte en ratón.
+
+        Con el lápiz se usan directamente sus eventos: llegan con más precisión
+        que los del ratón y así sabemos si se usa la punta de goma, que borra
+        aunque esté elegida otra herramienta.
+        """
+        if self._doc is None or not len(self._layout):
+            return False
+        kind = event.type()
+        if kind == QEvent.TabletPress:
+            if event.button() != Qt.LeftButton:  # botón lateral: como clic derecho
+                return False
+            eraser_tip = event.pointerType() == QPointingDevice.PointerType.Eraser
+            tool = Tool.ERASER if eraser_tip else self._tool
+            if tool not in (Tool.PEN, Tool.ERASER):
+                return False
+            self._tablet_active = True
+            self._begin_pen_tool(tool, event.position())
+        elif not self._tablet_active:
+            return False  # el lápiz pasa por encima sin tocar, o es otra herramienta
+        elif kind == QEvent.TabletMove:
+            self._continue_pen_tool(event.position())
+        else:
+            self._tablet_active = False
+            self._end_pen_tool()
+        event.accept()
+        return True
+
     # ---- Ratón -------------------------------------------------------------
 
     def _content_pos(self, pos: QPointF) -> QPointF:
@@ -495,7 +693,7 @@ class PageView(QAbstractScrollArea):
             self.selectionChanged.emit(selection is not None)
 
     def mousePressEvent(self, event) -> None:
-        if self._doc is None or not len(self._layout):
+        if self._doc is None or not len(self._layout) or self._tablet_active:
             super().mousePressEvent(event)
             return
         if event.button() == Qt.RightButton:
@@ -503,6 +701,10 @@ class PageView(QAbstractScrollArea):
             return
         if event.button() != Qt.LeftButton:
             super().mousePressEvent(event)
+            return
+        if self._tool in (Tool.PEN, Tool.ERASER):
+            self._begin_pen_tool(self._tool, event.position())
+            event.accept()
             return
         self.setFocus()
         self._press_content = self._content_pos(event.position())
@@ -535,7 +737,9 @@ class PageView(QAbstractScrollArea):
             vbar.setValue(vbar.value() - AUTOSCROLL_STEP_PX)
         elif y > self.viewport().height():
             vbar.setValue(vbar.value() + AUTOSCROLL_STEP_PX)
-        if self._drag == _Drag.TEXT:
+        if self._drag in (_Drag.INK, _Drag.ERASE):
+            self._continue_pen_tool(event.position())
+        elif self._drag == _Drag.TEXT:
             self._update_drag_selection(event.position())
         elif self._drag in (_Drag.MOVE_ANNOT, _Drag.NEW_BOX):
             self._drag_content = self._content_pos(event.position())
@@ -545,6 +749,11 @@ class PageView(QAbstractScrollArea):
     def mouseReleaseEvent(self, event) -> None:
         if event.button() != Qt.LeftButton or self._drag == _Drag.NONE:
             super().mouseReleaseEvent(event)
+            return
+        if self._drag in (_Drag.INK, _Drag.ERASE):
+            if not self._tablet_active:
+                self._end_pen_tool()
+            event.accept()
             return
         drag, self._drag = self._drag, _Drag.NONE
         page = self._press_page
@@ -574,6 +783,9 @@ class PageView(QAbstractScrollArea):
         event.accept()
 
     def mouseDoubleClickEvent(self, event) -> None:
+        if self._tool in (Tool.PEN, Tool.ERASER):
+            self.mousePressEvent(event)  # dos trazos rápidos seguidos no son un doble clic
+            return
         if event.button() == Qt.LeftButton and self._tool == Tool.SELECT:
             annot = self._annotation_under(event.position(), movable_only=True)
             if annot is not None:
