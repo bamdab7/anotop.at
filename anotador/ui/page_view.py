@@ -11,7 +11,7 @@ from enum import Enum
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QColor, QCursor, QGuiApplication, QImage, QKeySequence, QPainter,
-                           QPainterPath, QPen, QPixmap, QPointingDevice)
+                           QPainterPath, QPalette, QPen, QPixmap, QPointingDevice)
 from PySide6.QtWidgets import QAbstractScrollArea, QMenu
 
 from anotador.core.annotations import (MARKUP_COLORS, PEN_WIDTHS, AnnotationInfo, Color,
@@ -26,10 +26,15 @@ from anotador.core.search import SearchHit, SearchResults
 CACHE_SIZE = 24          # páginas renderizadas que se guardan en memoria
 RERENDER_DELAY_MS = 120  # espera tras un cambio de zoom antes de re-renderizar
 WHEEL_ZOOM_FACTOR = 1.15  # zoom por cada "clic" de la rueda con Ctrl
-BACKGROUND = QColor("#5a5a5a")
-BORDER = QColor("#3a3a3a")
-NIGHT_BACKGROUND = QColor("#3c3c3c")
-NIGHT_BORDER = QColor("#5a5a5a")
+# Fondo alrededor de las páginas: gris claro como Papers o Edge; oscuro si Windows
+# usa el tema oscuro o está el modo noche. Las páginas llevan una sombra suave.
+BACKGROUND = QColor("#e4e4e7")
+DARK_BACKGROUND = QColor("#202020")
+BORDER = QColor(0, 0, 0, 45)
+NIGHT_BACKGROUND = QColor("#161616")
+NIGHT_BORDER = QColor(255, 255, 255, 40)
+SHADOW = ((1, 40), (2, 26), (4, 16), (6, 9), (9, 4))  # (separación en px, opacidad) de cada capa
+SELECTION_BAR_GAP = 8  # px entre el texto seleccionado y la mini barra
 NIGHT_PAPER = QColor(NIGHT_DARK, NIGHT_DARK, NIGHT_DARK)
 # Resaltado de búsqueda: solo se pinta en pantalla, nunca se guarda en el PDF.
 HIT_FILL = QColor(255, 220, 0, 90)
@@ -142,6 +147,7 @@ class PageView(QAbstractScrollArea):
         self._tablet_active = False  # hay un trazo o borrado hecho con el lápiz táctil
         self._eraser_cursor: QCursor | None = None
         self._night = False
+        self._selection_bar = None  # mini barra flotante (la pone la ventana)
 
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -237,6 +243,47 @@ class PageView(QAbstractScrollArea):
             self._selection = None
             self.viewport().update()
             self.selectionChanged.emit(False)
+        self._place_selection_bar()
+
+    def set_selection_bar(self, bar) -> None:
+        """Widget que aparece junto al texto seleccionado al soltar el ratón."""
+        bar.setParent(self.viewport())
+        bar.hide()
+        self._selection_bar = bar
+
+    def _place_selection_bar(self) -> None:
+        """Debajo de la selección (o encima, si abajo no cabe); oculta si no se ve."""
+        bar = self._selection_bar
+        if bar is None:
+            return
+        sel = self._selection
+        if (sel is None or self._drag == _Drag.TEXT or self._tool != Tool.SELECT
+                or sel.page not in self._visible_pages()):
+            bar.hide()
+            return
+        origin = self._origin()
+        area = None
+        for rect in sel.rects:
+            r = self._hit_rect(SearchHit(sel.page, *rect), origin)
+            area = r if area is None else area.united(r)
+        bar.adjustSize()
+        vw, vh = self.viewport().width(), self.viewport().height()
+        x = min(max(area.center().x() - bar.width() / 2, 4), vw - bar.width() - 4)
+        y = area.bottom() + SELECTION_BAR_GAP
+        if y + bar.height() > vh - 4:
+            y = area.top() - SELECTION_BAR_GAP - bar.height()
+        if y < 4:  # la selección ocupa toda la vista o está fuera
+            bar.hide()
+            return
+        bar.move(round(x), round(y))
+        bar.show()
+        bar.raise_()
+
+    def _background(self) -> QColor:
+        if self._night:
+            return NIGHT_BACKGROUND
+        dark_theme = self.palette().color(QPalette.Window).lightness() < 128
+        return DARK_BACKGROUND if dark_theme else BACKGROUND
 
     def copy_selection(self) -> None:
         if self._selection is not None:
@@ -409,6 +456,7 @@ class PageView(QAbstractScrollArea):
         self.zoomChanged.emit(self._zoom)
         self._update_current_page()
         self.viewport().update()
+        self._place_selection_bar()
         self._schedule_render(RERENDER_DELAY_MS)
 
     def _set_fit_width(self, enabled: bool) -> None:
@@ -482,10 +530,11 @@ class PageView(QAbstractScrollArea):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self.viewport())
-        painter.fillRect(self.viewport().rect(), NIGHT_BACKGROUND if self._night else BACKGROUND)
+        background = self._background()
+        painter.fillRect(self.viewport().rect(), background)
 
         if self._doc is None:
-            painter.setPen(QColor("#e0e0e0"))
+            painter.setPen(QColor("#808080"))
             painter.drawText(self.viewport().rect(), Qt.AlignCenter,
                              "Abre un PDF con Ctrl+O o arrástralo aquí")
             painter.end()
@@ -494,11 +543,17 @@ class PageView(QAbstractScrollArea):
         origin = self._origin()
         needs_render = False
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.setPen(QPen(NIGHT_BORDER if self._night else BORDER, 1))
-        painter.setBrush(NIGHT_PAPER if self._night else Qt.white)
         for i in self._visible_pages():
             r = self._layout.rects[i]
             target = QRectF(r.x + origin.x(), r.y + origin.y(), r.width, r.height)
+            # Sombra: varias capas cada vez más anchas y transparentes, algo desplazadas abajo.
+            painter.setPen(Qt.NoPen)
+            for spread, alpha in SHADOW:
+                painter.setBrush(QColor(0, 0, 0, alpha))
+                painter.drawRoundedRect(target.adjusted(-spread, -spread + 1, spread,
+                                                        spread + 1), spread, spread)
+            painter.setPen(QPen(NIGHT_BORDER if self._night else BORDER, 1))
+            painter.setBrush(NIGHT_PAPER if self._night else Qt.white)
             painter.drawRect(target.adjusted(-0.5, -0.5, 0.5, 0.5))
             cached = self._cache.get(i)
             if cached is not None:
@@ -726,6 +781,7 @@ class PageView(QAbstractScrollArea):
             self._selection = selection
             self.viewport().update()
             self.selectionChanged.emit(selection is not None)
+            self._place_selection_bar()
 
     def mousePressEvent(self, event) -> None:
         if self._doc is None or not len(self._layout) or self._tablet_active:
@@ -802,6 +858,7 @@ class PageView(QAbstractScrollArea):
             self._press_page = page  # _update_drag_selection la necesita
             self._update_drag_selection(event.position())
             self._press_page = -1
+            self._place_selection_bar()
         elif drag == _Drag.MOVE_ANNOT and moved and self._selected_annot is not None:
             delta = end - self._press_content
             self.moveRequested.emit(page, self._selected_annot.xref,
@@ -859,6 +916,7 @@ class PageView(QAbstractScrollArea):
     def scrollContentsBy(self, dx: int, dy: int) -> None:
         self.viewport().update()
         self._update_current_page()
+        self._place_selection_bar()  # la mini barra acompaña al texto seleccionado
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -866,6 +924,7 @@ class PageView(QAbstractScrollArea):
             self._apply_zoom(self._fit_width_zoom())
         self._update_scrollbars()
         self._update_current_page()
+        self._place_selection_bar()
 
     def wheelEvent(self, event) -> None:
         if event.modifiers() & Qt.ControlModifier:

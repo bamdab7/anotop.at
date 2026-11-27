@@ -13,7 +13,7 @@ from anotador.core.document import PdfDocument
 from anotador.core.geometry import zoom_to_fit
 from anotador.core.night import NIGHT_DARK
 
-from .annotate_toolbar import color_icon
+from .icons import icon, swatch_icon
 
 THUMB_WIDTH = 120
 THUMB_HEIGHT = 160
@@ -171,7 +171,6 @@ class SidePanel(QTabWidget):
         self.thumbnails.setUniformItemSizes(True)
         self.thumbnails.setIconSize(QSize(THUMB_WIDTH, THUMB_HEIGHT))
         self.thumbnails.setSpacing(6)
-        self.thumbnails.setStyleSheet("QListView { background: #e6e6e6; }")
         self.thumbnails.setSelectionMode(QAbstractItemView.SingleSelection)
         self.thumbnails.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self._thumb_model = ThumbnailModel(self.thumbnails)
@@ -211,6 +210,18 @@ class SidePanel(QTabWidget):
         self._annotation_stack.addWidget(self.annotation_list)
         self.addTab(self._annotation_stack, "Anotaciones")
 
+        # Pestañas con icono y nombre en el tooltip: con texto no caben y se cortan.
+        for index, (name, label) in enumerate((("thumbnails", "Miniaturas"),
+                                               ("outline", "Índice"),
+                                               ("annotations", "Anotaciones"))):
+            tab_icon = icon(name)
+            if not tab_icon.isNull():
+                self.setTabIcon(index, tab_icon)
+                self.setTabText(index, "")
+            self.setTabToolTip(index, label)
+        self.setIconSize(QSize(18, 18))
+        self.tabBar().setExpanding(True)
+
         self.setMinimumWidth(THUMB_WIDTH + 50)
 
     def set_document(self, doc: PdfDocument | None) -> None:
@@ -230,7 +241,7 @@ class SidePanel(QTabWidget):
             item.setData(Qt.UserRole, info)
             item.setToolTip(info.text or info.label)
             if info.color is not None:
-                item.setIcon(color_icon(info.color))
+                item.setIcon(swatch_icon(info.color))
             self.annotation_list.addItem(item)
         self.annotation_list.verticalScrollBar().setValue(scroll)
         self.select_annotation(selected)

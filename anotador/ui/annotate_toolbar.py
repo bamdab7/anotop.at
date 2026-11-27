@@ -1,212 +1,94 @@
-"""Barra «Anotar»: marcar texto, notas, cuadros de texto y dibujo, con color y grosor."""
+"""Barra «Herramientas de anotación»: marcar texto, notas, cuadros de texto y dibujo.
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QLabel, QMenu, QToolBar, QToolButton
+Por defecto va en vertical a la izquierda (como en Acrobat), pero puede ir arriba.
+El color y el grosor se eligen en un botón desplegable cada uno, para que la
+barra sea compacta.
+"""
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtWidgets import QMenu, QToolButton
 
 from anotador.core.annotations import MARKUP_COLORS, PEN_WIDTHS, Color, MarkupKind
 
+from .icons import icon, swatch_icon, width_icon
 from .page_view import Tool
+from .toolbars import ToolBar
 
-ICON_SIZE = 32  # se dibuja grande y Qt lo reduce: así se ve nítido en pantallas escaladas
-
+# Clave en las preferencias, texto, atajo y símbolo de cada botón de marcado.
 MARKUP_LABELS = {
-    MarkupKind.HIGHLIGHT: ("Resaltar", "Ctrl+Alt+H"),
-    MarkupKind.UNDERLINE: ("Subrayar", "Ctrl+Alt+U"),
-    MarkupKind.STRIKEOUT: ("Tachar", "Ctrl+Alt+T"),
+    MarkupKind.HIGHLIGHT: ("highlight", "Resaltar", "Ctrl+Alt+H"),
+    MarkupKind.UNDERLINE: ("underline", "Subrayar", "Ctrl+Alt+U"),
+    MarkupKind.STRIKEOUT: ("strikeout", "Tachar", "Ctrl+Alt+T"),
+}
+
+TOOL_LABELS = {
+    Tool.NOTE: ("note", "Nota", "Ctrl+Alt+N", "Nota adhesiva: haz clic donde quieras ponerla"),
+    Tool.TEXT_BOX: ("text_box", "Cuadro de texto", "Ctrl+Alt+X",
+                    "Cuadro de texto: arrastra para dibujarlo"),
+    Tool.PEN: ("pen", "Lápiz", "Ctrl+Alt+P",
+               "Lápiz: dibuja a mano alzada con el ratón o el lápiz táctil"),
+    Tool.ERASER: ("eraser", "Goma", "Ctrl+Alt+E",
+                  "Goma: borra trazos enteros del dibujo. "
+                  "La punta de goma del lápiz táctil también borra"),
 }
 
 
-def _qcolor(color: Color) -> QColor:
-    return QColor.fromRgbF(*color)
-
-
-def markup_icon(kind: MarkupKind, color: Color) -> QIcon:
-    """Icono con las letras «ab» resaltadas, subrayadas o tachadas en ``color``."""
-    pixmap = QPixmap(ICON_SIZE, ICON_SIZE)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    box = QRectF(2, 4, ICON_SIZE - 4, ICON_SIZE - 8)
-    if kind == MarkupKind.HIGHLIGHT:
-        painter.fillRect(box, _qcolor(color))
-    font = QFont()
-    font.setPixelSize(round(ICON_SIZE * 0.6))
-    font.setBold(True)
-    painter.setFont(font)
-    painter.setPen(QColor("#202020"))
-    painter.drawText(box, Qt.AlignCenter, "ab")
-    if kind != MarkupKind.HIGHLIGHT:
-        painter.setPen(QPen(_qcolor(color), 3))
-        y = box.bottom() - 2 if kind == MarkupKind.UNDERLINE else box.center().y() + 1
-        painter.drawLine(round(box.left() + 2), round(y), round(box.right() - 2), round(y))
-    painter.end()
-    return QIcon(pixmap)
-
-
-def note_icon(color: Color) -> QIcon:
-    """Papelito de color con la esquina doblada."""
-    pixmap = QPixmap(ICON_SIZE, ICON_SIZE)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setPen(QPen(QColor("#505050"), 1.5))
-    painter.setBrush(_qcolor(color))
-    fold = 9
-    painter.drawPolygon([QPointF(5, 4), QPointF(27 - fold, 4), QPointF(27, 4 + fold),
-                         QPointF(27, 28), QPointF(5, 28)])
-    painter.drawLine(QPointF(27 - fold, 4), QPointF(27 - fold, 4 + fold))
-    painter.drawLine(QPointF(27 - fold, 4 + fold), QPointF(27, 4 + fold))
-    for y in (13, 18, 23):
-        painter.drawLine(QPointF(9, y), QPointF(23, y))
-    painter.end()
-    return QIcon(pixmap)
-
-
-def text_box_icon(color: Color) -> QIcon:
-    """Recuadro con una «T»."""
-    pixmap = QPixmap(ICON_SIZE, ICON_SIZE)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setPen(QPen(QColor("#505050"), 1.5))
-    painter.setBrush(QColor.fromRgbF(*(0.8 + 0.2 * c for c in color)))
-    box = QRectF(3, 6, ICON_SIZE - 6, ICON_SIZE - 12)
-    painter.drawRect(box)
-    font = QFont()
-    font.setPixelSize(round(ICON_SIZE * 0.55))
-    font.setBold(True)
-    painter.setFont(font)
-    painter.setPen(QColor("#202020"))
-    painter.drawText(box, Qt.AlignCenter, "T")
-    painter.end()
-    return QIcon(pixmap)
-
-
-def pen_icon(color: Color) -> QIcon:
-    """Lápiz inclinado con un garabato del color elegido."""
-    pixmap = QPixmap(ICON_SIZE, ICON_SIZE)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setPen(QPen(_qcolor(color), 3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-    painter.drawPolyline([QPointF(3, 28), QPointF(8, 24), QPointF(12, 28), QPointF(16, 25)])
-    painter.setPen(QPen(QColor("#505050"), 1.5))
-    painter.setBrush(QColor("#f2c14e"))
-    painter.drawPolygon([QPointF(10, 20), QPointF(24, 6), QPointF(28, 10), QPointF(14, 24)])
-    painter.setBrush(QColor("#505050"))
-    painter.drawPolygon([QPointF(10, 20), QPointF(14, 24), QPointF(8, 26)])
-    painter.end()
-    return QIcon(pixmap)
-
-
-def eraser_icon() -> QIcon:
-    """Goma de borrar inclinada, mitad rosa y mitad azul."""
-    pixmap = QPixmap(ICON_SIZE, ICON_SIZE)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.translate(ICON_SIZE / 2, ICON_SIZE / 2)
-    painter.rotate(-40)
-    painter.setPen(QPen(QColor("#505050"), 1.5))
-    painter.setBrush(QColor("#f48fb1"))
-    painter.drawRoundedRect(QRectF(-13, -7, 13, 14), 2, 2)
-    painter.setBrush(QColor("#64b5f6"))
-    painter.drawRoundedRect(QRectF(0, -7, 13, 14), 2, 2)
-    painter.end()
-    return QIcon(pixmap)
-
-
-def width_icon(width: float) -> QIcon:
-    """Raya horizontal del grosor dado (en puntos PDF)."""
-    pixmap = QPixmap(ICON_SIZE, ICON_SIZE)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setPen(QPen(QColor("#303030"), max(1.5, width * 1.6), Qt.SolidLine, Qt.RoundCap))
-    painter.drawLine(QPointF(7, ICON_SIZE / 2), QPointF(ICON_SIZE - 7, ICON_SIZE / 2))
-    painter.end()
-    return QIcon(pixmap)
-
-
-def color_icon(color: Color) -> QIcon:
-    pixmap = QPixmap(ICON_SIZE, ICON_SIZE)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setPen(QPen(QColor("#555555"), 1.5))
-    painter.setBrush(_qcolor(color))
-    painter.drawEllipse(QRectF(5, 5, ICON_SIZE - 10, ICON_SIZE - 10))
-    painter.end()
-    return QIcon(pixmap)
-
-
-class AnnotateToolBar(QToolBar):
+class AnnotateToolBar(ToolBar):
     markupRequested = Signal(object)  # MarkupKind
     toolSelected = Signal(object)     # Tool
     penChanged = Signal(object, float)  # color, grosor en puntos
 
     def __init__(self, parent=None):
-        super().__init__("Anotar", parent)
-        self.setObjectName("annotate_toolbar")
-        self.setMovable(False)
-        self.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        super().__init__("Herramientas de anotación", "annotate_toolbar", parent)
         self._color: Color = MARKUP_COLORS[0][1]
         self._pen_width = PEN_WIDTHS[1][1]
+        self._text = False  # nombre junto a los iconos (solo cuando va en horizontal)
 
         self.markup_actions: dict[MarkupKind, QAction] = {}
-        for kind, (label, shortcut) in MARKUP_LABELS.items():
+        for kind, (key, label, shortcut) in MARKUP_LABELS.items():
             action = QAction(label, self)
             action.setShortcut(shortcut)
             action.setToolTip(f"{label} el texto seleccionado ({shortcut})")
             action.triggered.connect(lambda _=False, k=kind: self.markupRequested.emit(k))
-            self.addAction(action)
+            self.add_item(key, label, action)
             self.markup_actions[kind] = action
 
-        self.addSeparator()
         # Herramientas: como mucho una activa; sin ninguna, el ratón selecciona texto.
         self._tool_group = QActionGroup(self)
         self._tool_group.setExclusionPolicy(QActionGroup.ExclusionPolicy.ExclusiveOptional)
         self.tool_actions: dict[Tool, QAction] = {}
-        for tool, label, shortcut, tip in (
-                (Tool.NOTE, "Nota", "Ctrl+Alt+N", "Nota adhesiva: haz clic donde quieras ponerla"),
-                (Tool.TEXT_BOX, "Cuadro de texto", "Ctrl+Alt+X",
-                 "Cuadro de texto: arrastra para dibujarlo"),
-                (Tool.PEN, "Lápiz", "Ctrl+Alt+P",
-                 "Lápiz: dibuja a mano alzada con el ratón o el lápiz táctil"),
-                (Tool.ERASER, "Goma", "Ctrl+Alt+E",
-                 "Goma: borra trazos enteros del dibujo. "
-                 "La punta de goma del lápiz táctil también borra")):
+        for tool, (key, label, shortcut, tip) in TOOL_LABELS.items():
+            if tool in (Tool.NOTE, Tool.PEN):
+                self.new_group()
             action = QAction(label, self)
             action.setCheckable(True)
             action.setShortcut(shortcut)
             action.setToolTip(f"{tip} ({shortcut}). Esc para cancelar.")
             action.triggered.connect(self._on_tool_triggered)
             self._tool_group.addAction(action)
-            self.addAction(action)
+            self.add_item(key, label, action)
             self.tool_actions[tool] = action
+        self.tool_actions[Tool.ERASER].setIcon(icon("eraser"))
 
-        self.addSeparator()
-        self.addWidget(QLabel(" Color: ", self))
+        # Color: un botón con la muestra del color actual que despliega la paleta.
+        self.new_group()
+        self._color_button = self._popup_button()
+        color_menu = QMenu(self._color_button)
         self._color_group = QActionGroup(self)
         self._color_group.setExclusive(True)
         for name, color in MARKUP_COLORS:
-            action = QAction(color_icon(color), name, self)
+            action = QAction(swatch_icon(color), name, self)
             action.setCheckable(True)
-            action.setToolTip(f"Color: {name.lower()}")
             action.setData(color)
             action.toggled.connect(lambda checked, c=color: checked and self._set_color(c))
             self._color_group.addAction(action)
-            self.addAction(action)
-            # Los colores se ven solo como círculo, sin texto.
-            self.widgetForAction(action).setToolButtonStyle(Qt.ToolButtonIconOnly)
-        self._color_group.actions()[0].setChecked(True)
+            color_menu.addAction(action)
+        self._color_button.setMenu(color_menu)
+        self.add_item("color", "Color", self._color_button)
 
-        # Grosor del lápiz: un solo botón con menú, para que la barra quepa en pantalla.
-        self.addSeparator()
-        self._width_button = QToolButton(self)
-        self._width_button.setPopupMode(QToolButton.InstantPopup)
-        self._width_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        # Grosor del lápiz, igual.
+        self._width_button = self._popup_button()
         width_menu = QMenu(self._width_button)
         self._width_group = QActionGroup(self)
         self._width_group.setExclusive(True)
@@ -217,13 +99,29 @@ class AnnotateToolBar(QToolBar):
             self._width_group.addAction(action)
             width_menu.addAction(action)
         self._width_button.setMenu(width_menu)
-        self.addWidget(self._width_button)
+        self.add_item("width", "Grosor del lápiz", self._width_button)
+
+        self._color_group.actions()[0].setChecked(True)
         for action, (_, width) in zip(self._width_group.actions(), PEN_WIDTHS):
             action.setChecked(width == self._pen_width)
         self._update_width_button()
-        self.tool_actions[Tool.ERASER].setIcon(eraser_icon())
         self._refresh_icons()
         self.set_has_selection(False)
+        # Al pasar de vertical a horizontal (o al revés) se recalcula el estilo.
+        self.orientationChanged.connect(lambda _: self.set_text_beside_icons(self._text))
+
+    def _popup_button(self) -> QToolButton:
+        button = QToolButton(self)
+        button.setPopupMode(QToolButton.InstantPopup)
+        button.setAutoRaise(True)
+        button.setIconSize(self.iconSize())
+        return button
+
+    def set_text_beside_icons(self, enabled: bool) -> None:
+        self._text = enabled
+        super().set_text_beside_icons(enabled)
+
+    # ---- Estado
 
     @property
     def color(self) -> Color:
@@ -239,6 +137,11 @@ class AnnotateToolBar(QToolBar):
             if action.isChecked():
                 return tool
         return Tool.SELECT
+
+    def all_actions(self) -> list[QAction]:
+        """Acciones con atajo de teclado (la ventana las registra para que funcionen
+        aunque la barra o el botón estén ocultos)."""
+        return list(self.markup_actions.values()) + list(self.tool_actions.values())
 
     def set_tool(self, tool: Tool) -> None:
         """Refleja en los botones la herramienta activa (sin emitir señales)."""
@@ -265,11 +168,17 @@ class AnnotateToolBar(QToolBar):
     def _update_width_button(self) -> None:
         name = next(n for n, w in PEN_WIDTHS if w == self._pen_width)
         self._width_button.setIcon(width_icon(self._pen_width))
+        self._width_button.setText(f"Grosor: {name.lower()}")
         self._width_button.setToolTip(f"Grosor del lápiz: {name.lower()}")
 
     def _refresh_icons(self) -> None:
+        """Los botones que pintan llevan una franja con el color actual."""
         for kind, action in self.markup_actions.items():
-            action.setIcon(markup_icon(kind, self._color))
-        self.tool_actions[Tool.NOTE].setIcon(note_icon(self._color))
-        self.tool_actions[Tool.TEXT_BOX].setIcon(text_box_icon(self._color))
-        self.tool_actions[Tool.PEN].setIcon(pen_icon(self._color))
+            action.setIcon(icon(MARKUP_LABELS[kind][0], strip=self._color))
+        for tool in (Tool.NOTE, Tool.TEXT_BOX, Tool.PEN):
+            action = self.tool_actions[tool]
+            action.setIcon(icon(TOOL_LABELS[tool][0], strip=self._color))
+        name = next(n for n, c in MARKUP_COLORS if c == self._color)
+        self._color_button.setIcon(swatch_icon(self._color))
+        self._color_button.setText(f"Color: {name.lower()}")
+        self._color_button.setToolTip(f"Color: {name.lower()}")
