@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QIntValidator, QKeySequence
 from PySide6.QtWidgets import (QDockWidget, QFileDialog, QLabel, QLineEdit, QMainWindow,
                                QMessageBox, QSizePolicy, QToolBar, QVBoxLayout, QWidget)
@@ -17,6 +17,7 @@ from .search_bar import SearchBar
 from .side_panel import SidePanel
 
 APP_NAME = "Anotador PDF"
+SETTINGS_ORG = "AnotadorPDF"  # nombre para guardar las preferencias (registro de Windows)
 
 
 class MainWindow(QMainWindow):
@@ -73,12 +74,18 @@ class MainWindow(QMainWindow):
         self.view.deleteRequested.connect(self._delete_annotation)
         self.view.inkRequested.connect(self._create_ink)
         self.view.eraseRequested.connect(self._erase_ink)
+        self.view.eraseStarted.connect(self._begin_erase)
+        self.view.eraseFinished.connect(self._end_erase)
         self.annotate_bar.penChanged.connect(self.view.set_pen)
         self.view.set_pen(self.annotate_bar.color, self.annotate_bar.pen_width)
         self.view.annotationSelected.connect(self.side_panel.select_annotation)
         self.side_panel.annotationActivated.connect(self._show_annotation)
         self.side_panel.annotationDeleteRequested.connect(self._delete_annotation)
 
+        # Formato por defecto (en Windows, el registro); las pruebas pueden cambiarlo.
+        self._settings = QSettings(QSettings.defaultFormat(), QSettings.UserScope,
+                                   SETTINGS_ORG, APP_NAME)
+        self.act_night.setChecked(self._settings.value("night_mode", False, type=bool))
         self._update_ui()
 
     # ---- Construcción ------------------------------------------------------
@@ -102,6 +109,20 @@ class MainWindow(QMainWindow):
         self.act_copy.setShortcut(QKeySequence.Copy)
         self.act_copy.setShortcutContext(Qt.WidgetShortcut)  # Ctrl+C lo gestiona la vista
         self.act_copy.triggered.connect(self.view.copy_selection)
+
+        self.act_undo = QAction("&Deshacer", self)
+        self.act_undo.setShortcut(QKeySequence.Undo)
+        self.act_undo.triggered.connect(self.undo)
+
+        self.act_redo = QAction("&Rehacer", self)
+        self.act_redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+        self.act_redo.triggered.connect(self.redo)
+
+        self.act_night = QAction("Modo &noche", self)
+        self.act_night.setCheckable(True)
+        self.act_night.setShortcut(QKeySequence("Ctrl+I"))
+        self.act_night.setToolTip("Página oscura y texto claro (Ctrl+I). No cambia el PDF.")
+        self.act_night.toggled.connect(self._set_night_mode)
 
         self.act_quit = QAction("&Salir", self)
         self.act_quit.setShortcut(QKeySequence("Ctrl+Q"))
@@ -154,6 +175,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.act_quit)
 
         edit_menu = self.menuBar().addMenu("&Editar")
+        edit_menu.addAction(self.act_undo)
+        edit_menu.addAction(self.act_redo)
+        edit_menu.addSeparator()
         edit_menu.addAction(self.act_copy)
         edit_menu.addSeparator()
         edit_menu.addAction(self.act_find)
@@ -170,6 +194,8 @@ class MainWindow(QMainWindow):
         zoom_out_item.setShortcuts(self.act_zoom_out.shortcuts())
         view_menu.addAction(self.act_actual_size)
         view_menu.addAction(self.act_fit_width)
+        view_menu.addSeparator()
+        view_menu.addAction(self.act_night)
         self._view_items = [zoom_in_item, zoom_out_item]
         # Los atajos los gestionan las entradas del menú; evitamos duplicarlos.
         self.act_zoom_in.setShortcuts([])
@@ -182,6 +208,8 @@ class MainWindow(QMainWindow):
         bar.addAction(self.act_side_panel)
         bar.addAction(self.act_open)
         bar.addAction(self.act_save)
+        bar.addAction(self.act_undo)
+        bar.addAction(self.act_redo)
         bar.addSeparator()
 
         bar.addWidget(QLabel(" Página "))
@@ -391,6 +419,15 @@ class MainWindow(QMainWindow):
                                                  self.annotate_bar.pen_width)):
             self._page_changed(page)
 
+    def _begin_erase(self) -> None:
+        if self._doc is not None:
+            self._doc.begin_operation("borrar con la goma")
+
+    def _end_erase(self) -> None:
+        if self._doc is not None:
+            self._doc.end_operation()
+            self._update_modified()
+
     def _erase_ink(self, page: int, start, end, radius: float) -> None:
         if self._apply(lambda: self._doc.erase_ink(page, start, end, radius)):
             self._page_changed(page)  # solo si se ha borrado algo
@@ -426,11 +463,54 @@ class MainWindow(QMainWindow):
         self.view.show_annotation(info)
         self.view.setFocus()  # así Supr borra la anotación marcada
 
+    # ---- Deshacer y rehacer -------------------------------------------------
+
+    def undo(self) -> None:
+        if self._doc is not None and not self.view.is_busy:
+            self._after_history_move(self._doc.undo(), "Deshecho")
+
+    def redo(self) -> None:
+        if self._doc is not None and not self.view.is_busy:
+            self._after_history_move(self._doc.redo(), "Rehecho")
+
+    def _after_history_move(self, step, verb: str) -> None:
+        if step is None:
+            return
+        for page in step.pages:
+            self.view.refresh_page(page)
+            self.side_panel.refresh_page(page)
+        self.view.select_annotation(None)
+        self.side_panel.set_annotations(self._doc.all_annotations())
+        self._update_modified()
+        self.statusBar().showMessage(f"{verb}: {step.label}", 3000)
+
+    def _update_history_actions(self) -> None:
+        doc = self._doc
+        for action, name, label in (
+                (self.act_undo, "Deshacer", doc.undo_label if doc else None),
+                (self.act_redo, "Rehacer", doc.redo_label if doc else None)):
+            action.setEnabled(label is not None)
+            action.setText(f"&{name}: {label}" if label else f"&{name}")
+            shortcut = action.shortcut().toString(QKeySequence.NativeText)
+            action.setToolTip(f"{name} {label} ({shortcut})" if label
+                              else f"Nada que {name.lower()} ({shortcut})")
+        # En la barra, el botón solo dice «Deshacer»/«Rehacer»; el detalle va en el tooltip.
+        for action, name in ((self.act_undo, "Deshacer"), (self.act_redo, "Rehacer")):
+            action.setIconText(name)
+
+    # ---- Modo noche --------------------------------------------------------
+
+    def _set_night_mode(self, night: bool) -> None:
+        self.view.set_night_mode(night)
+        self.side_panel.set_night_mode(night)
+        self._settings.setValue("night_mode", night)  # se recuerda para la próxima vez
+
     # ---- Guardar -----------------------------------------------------------
 
     def _update_modified(self) -> None:
         modified = self._doc is not None and self._doc.modified
         self.act_save.setEnabled(modified)
+        self._update_history_actions()
         # «[*]» es donde Qt pone el asterisco de «cambios sin guardar».
         title = f"{self._doc.path.name}[*] — {APP_NAME}" if self._doc else APP_NAME
         self.setWindowTitle(title)

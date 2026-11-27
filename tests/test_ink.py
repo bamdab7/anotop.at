@@ -115,12 +115,12 @@ def test_ink_is_visible_when_rendered(blank_pdf):
     doc = PdfDocument(blank_pdf())
     doc.add_ink(0, [[(100, 100), (200, 100)]], BLACK, 5.0)
     doc.add_ink(0, [[(150, 300)]], BLACK, 5.0)  # un simple clic deja un punto
-    with pymupdf.open() as tmp:
-        tmp.insert_pdf(doc._doc)
-        pix = tmp[0].get_pixmap()
-    assert pix.pixel(150, 100) == (0, 0, 0)
-    assert pix.pixel(150, 300) == (0, 0, 0)
-    assert pix.pixel(150, 200) == (255, 255, 255)
+    BLACK_PX, WHITE_PX = bytes(3), bytes([255] * 3)
+    page = doc.render_page(0, zoom=0.75)  # 0.75 de zoom = 1 píxel por punto
+    pixel = lambda x, y: page.samples[y * page.stride + 3 * x:y * page.stride + 3 * x + 3]
+    assert pixel(150, 100) == BLACK_PX
+    assert pixel(150, 300) == BLACK_PX
+    assert pixel(150, 200) == WHITE_PX
     doc.close()
 
 

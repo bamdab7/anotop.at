@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QLabel, QListView, QListWidget
 from anotador.core.annotations import AnnotationInfo
 from anotador.core.document import PdfDocument
 from anotador.core.geometry import zoom_to_fit
+from anotador.core.night import NIGHT_DARK
 
 from .annotate_toolbar import color_icon
 
@@ -41,19 +42,28 @@ class ThumbnailModel(QAbstractListModel):
         super().__init__(view)
         self._view = view
         self._doc: PdfDocument | None = None
+        self._night = False
         self._cache: OrderedDict[int, QPixmap] = OrderedDict()
         self._pending: list[int] = []
         self._refreshing: set[int] = set()
-        self._placeholder = self._make_placeholder()
+        self._placeholder = self._make_placeholder(False)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._render_next)
 
     @staticmethod
-    def _make_placeholder() -> QPixmap:
+    def _make_placeholder(night: bool) -> QPixmap:
         pixmap = QPixmap(round(THUMB_HEIGHT * 0.7), THUMB_HEIGHT)
-        pixmap.fill(QColor("#f4f4f4"))
+        pixmap.fill(QColor(NIGHT_DARK, NIGHT_DARK, NIGHT_DARK) if night else QColor("#f4f4f4"))
         return _with_border(pixmap)
+
+    def set_night_mode(self, night: bool) -> None:
+        if night == self._night:
+            return
+        self._night = night
+        self._placeholder = self._make_placeholder(night)
+        for row in list(self._cache):
+            self.refresh(row)  # las visibles se vuelven a pintar; las demás, al verse
 
     def set_document(self, doc: PdfDocument | None) -> None:
         self.beginResetModel()
@@ -122,7 +132,7 @@ class ThumbnailModel(QAbstractListModel):
         dpr = self._view.devicePixelRatioF()
         width, height = self._doc.page_sizes[row]
         zoom = zoom_to_fit(width, height, THUMB_WIDTH, THUMB_HEIGHT)
-        page = self._doc.render_page(row, zoom, dpr)
+        page = self._doc.render_page(row, zoom, dpr, night=self._night)
         image = QImage(page.samples, page.width, page.height, page.stride,
                        QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(image)
@@ -255,6 +265,9 @@ class SidePanel(QTabWidget):
 
     def refresh_page(self, page: int) -> None:
         self._thumb_model.refresh(page)
+
+    def set_night_mode(self, night: bool) -> None:
+        self._thumb_model.set_night_mode(night)
 
     def set_current_page(self, page: int) -> None:
         """Marca la miniatura de la página actual sin provocar un salto."""

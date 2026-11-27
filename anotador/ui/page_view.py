@@ -20,6 +20,7 @@ from anotador.core.document import PdfDocument
 from anotador.core.geometry import (clamp_zoom, pixels_to_points, points_to_pixels, zoom_in,
                                     zoom_out, zoom_to_fit_width)
 from anotador.core.layout import MARGIN_PX, DocumentPoint, PageLayout
+from anotador.core.night import NIGHT_DARK, night_color
 from anotador.core.search import SearchHit, SearchResults
 
 CACHE_SIZE = 24          # páginas renderizadas que se guardan en memoria
@@ -27,6 +28,9 @@ RERENDER_DELAY_MS = 120  # espera tras un cambio de zoom antes de re-renderizar
 WHEEL_ZOOM_FACTOR = 1.15  # zoom por cada "clic" de la rueda con Ctrl
 BACKGROUND = QColor("#5a5a5a")
 BORDER = QColor("#3a3a3a")
+NIGHT_BACKGROUND = QColor("#3c3c3c")
+NIGHT_BORDER = QColor("#5a5a5a")
+NIGHT_PAPER = QColor(NIGHT_DARK, NIGHT_DARK, NIGHT_DARK)
 # Resaltado de búsqueda: solo se pinta en pantalla, nunca se guarda en el PDF.
 HIT_FILL = QColor(255, 220, 0, 90)
 CURRENT_HIT_FILL = QColor(255, 120, 0, 120)
@@ -110,6 +114,9 @@ class PageView(QAbstractScrollArea):
     deleteRequested = Signal(int, int)               # página, xref
     inkRequested = Signal(int, object)               # página, [(x, y), …] en puntos
     eraseRequested = Signal(int, object, object, float)  # página, desde, hasta, radio (puntos)
+    # Una pasada de goma entera: lo que borre entre las dos señales se deshace de una vez.
+    eraseStarted = Signal()
+    eraseFinished = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -134,6 +141,7 @@ class PageView(QAbstractScrollArea):
         self._erase_last: QPointF | None = None      # última posición de la goma (contenido)
         self._tablet_active = False  # hay un trazo o borrado hecho con el lápiz táctil
         self._eraser_cursor: QCursor | None = None
+        self._night = False
 
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -255,6 +263,7 @@ class PageView(QAbstractScrollArea):
         if tool == self._tool:
             return
         self._tool = tool
+        self._stop_erasing()
         self._drag = _Drag.NONE
         self._stroke = None  # Esc a medio trazo lo descarta
         self._erase_last = None
@@ -274,6 +283,25 @@ class PageView(QAbstractScrollArea):
                 self._eraser_cursor = _eraser_cursor()
             return self._eraser_cursor
         return Qt.CrossCursor
+
+    @property
+    def night_mode(self) -> bool:
+        return self._night
+
+    def set_night_mode(self, night: bool) -> None:
+        """Modo noche: página oscura y texto claro (solo en pantalla)."""
+        if night == self._night:
+            return
+        self._night = night
+        for cached in self._cache.values():
+            cached.zoom = None  # se ve la imagen anterior hasta que llega la nueva
+        self.viewport().update()
+        self._schedule_render()
+
+    @property
+    def is_busy(self) -> bool:
+        """Hay un gesto a medias (trazo, goma, arrastre): mejor no deshacer ahora."""
+        return self._drag != _Drag.NONE
 
     def set_pen(self, color: Color, width: float) -> None:
         """Color y grosor (en puntos PDF) con que se pinta el trazo mientras se dibuja."""
@@ -436,7 +464,7 @@ class PageView(QAbstractScrollArea):
             return
         index = pending[0]
         dpr = self.devicePixelRatioF()
-        page = self._doc.render_page(index, self._zoom, dpr)
+        page = self._doc.render_page(index, self._zoom, dpr, night=self._night)
         image = QImage(page.samples, page.width, page.height, page.stride,
                        QImage.Format_RGB888).copy()
         image.setDevicePixelRatio(dpr)
@@ -454,7 +482,7 @@ class PageView(QAbstractScrollArea):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self.viewport())
-        painter.fillRect(self.viewport().rect(), BACKGROUND)
+        painter.fillRect(self.viewport().rect(), NIGHT_BACKGROUND if self._night else BACKGROUND)
 
         if self._doc is None:
             painter.setPen(QColor("#e0e0e0"))
@@ -466,8 +494,8 @@ class PageView(QAbstractScrollArea):
         origin = self._origin()
         needs_render = False
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.setPen(QPen(BORDER, 1))
-        painter.setBrush(Qt.white)
+        painter.setPen(QPen(NIGHT_BORDER if self._night else BORDER, 1))
+        painter.setBrush(NIGHT_PAPER if self._night else Qt.white)
         for i in self._visible_pages():
             r = self._layout.rects[i]
             target = QRectF(r.x + origin.x(), r.y + origin.y(), r.width, r.height)
@@ -499,8 +527,8 @@ class PageView(QAbstractScrollArea):
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(HIT_FILL)
             painter.drawRect(rect)
-        painter.setPen(QPen(BORDER, 1))
-        painter.setBrush(Qt.white)
+        painter.setPen(QPen(NIGHT_BORDER if self._night else BORDER, 1))
+        painter.setBrush(NIGHT_PAPER if self._night else Qt.white)
 
     def _paint_selection(self, painter: QPainter, origin: QPointF) -> None:
         sel = self._selection
@@ -539,7 +567,8 @@ class PageView(QAbstractScrollArea):
         for stroke in strokes:
             if stroke.page not in visible or not stroke.points:
                 continue
-            pen = QPen(QColor.fromRgbF(*stroke.color),
+            color = night_color(stroke.color) if self._night else stroke.color
+            pen = QPen(QColor.fromRgbF(*color),
                        points_to_pixels(stroke.width, self._zoom),
                        Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
             painter.setPen(pen)
@@ -611,6 +640,7 @@ class PageView(QAbstractScrollArea):
         else:
             self._drag = _Drag.ERASE
             self._erase_last = None
+            self.eraseStarted.emit()
             self._erase_to(pos)
 
     def _continue_pen_tool(self, pos: QPointF) -> None:
@@ -623,8 +653,13 @@ class PageView(QAbstractScrollArea):
         if self._drag == _Drag.INK:
             self._finish_stroke()
         else:
+            self._stop_erasing()
+
+    def _stop_erasing(self) -> None:
+        if self._drag == _Drag.ERASE:
             self._drag = _Drag.NONE
             self._erase_last = None
+            self.eraseFinished.emit()
 
     def viewportEvent(self, event) -> bool:
         if event.type() in TABLET_EVENTS and self._tablet_event(event):

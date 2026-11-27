@@ -1,6 +1,7 @@
 """Acceso a un PDF con PyMuPDF."""
 
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,9 +9,10 @@ import pymupdf
 
 from .annotations import (INK, INK_SIMPLIFY_TOLERANCE, NOTE_ICON_SIZE,
                           TEXT_BOX_DEFAULT_SIZE, TEXT_BOX_FONT_SIZE, TEXT_BOX_MIN_SIZE,
-                          AnnotationInfo, Color, MarkupKind, TextSelection)
+                          AnnotationInfo, Color, MarkupKind, TextSelection, kind_label)
 from .geometry import scale_for_zoom
 from .ink import Point, Stroke, simplify_stroke, stroke_touches
+from .night import night_pixels
 from .search import SearchHit
 
 
@@ -71,13 +73,41 @@ class _InkStrokes:
     strokes: tuple[Stroke, ...]
 
 
+@dataclass(frozen=True)
+class HistoryStep:
+    """Un paso que se puede deshacer: qué fue (para la interfaz) y qué páginas cambió."""
+
+    label: str  # en minúscula, p. ej. «añadir resaltado»
+    pages: tuple[int, ...]
+
+
+class _OpenOperation:
+    def __init__(self, label: str, position: int):
+        self.label = label
+        self.position = position  # posición del historial al empezar
+        self.pages: set[int] = set()
+
+
 class PdfDocument:
+    """Un PDF abierto.
+
+    Deshacer y rehacer usan el registro de cambios («journal») de MuPDF: cada
+    cambio va dentro de una operación con nombre, y MuPDF sabe devolver los
+    objetos del PDF a como estaban.
+
+    IMPORTANTE: el registro de MuPDF deja de ser fiable en cuanto se guarda (un
+    segundo guardado incremental pierde anotaciones, y deshacer pasos anteriores
+    al guardado falla). Por eso, tras guardar, el documento se reabre desde el
+    archivo con un historial vacío: se puede deshacer desde el último guardado.
+    """
+
     def __init__(self, path):
         self.path = Path(path)
         self.modified = False  # hay anotaciones sin guardar
         self._words: dict[int, list] = {}
         self._annots: dict[int, list[AnnotationInfo]] = {}  # caché por página
         self._inks: dict[int, list[_InkStrokes]] = {}  # trazos para la goma, por página
+        self._text_doc = None  # copia de solo lectura para extraer texto (ver _text_page)
         try:
             self._doc = pymupdf.open(self.path)
         except Exception as exc:
@@ -90,6 +120,7 @@ class PdfDocument:
             raise DocumentError(f"«{self.path.name}» está protegido con contraseña.")
         # page.rect ya tiene en cuenta la rotación de la página.
         self._sizes = [(p.rect.width, p.rect.height) for p in self._doc]
+        self._start_history()
 
     @property
     def page_count(self) -> int:
@@ -100,10 +131,17 @@ class PdfDocument:
         """Tamaño visible (ancho, alto) de cada página en puntos PDF."""
         return list(self._sizes)
 
-    def render_page(self, index: int, zoom: float, device_pixel_ratio: float = 1.0) -> RenderedPage:
-        """Renderiza la página ``index``; ``device_pixel_ratio`` da nitidez en pantallas escaladas."""
+    def render_page(self, index: int, zoom: float, device_pixel_ratio: float = 1.0,
+                    night: bool = False) -> RenderedPage:
+        """Renderiza la página ``index``; ``device_pixel_ratio`` da nitidez en pantallas escaladas.
+
+        Con ``night`` la página sale oscura y el texto claro (modo noche).
+        """
         scale = scale_for_zoom(zoom) * device_pixel_ratio
         pix = self._doc[index].get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
+        if night:
+            samples = night_pixels(pix.samples, pix.width, pix.height, pix.stride)
+            return RenderedPage(pix.width, pix.height, pix.width * 3, samples)
         return RenderedPage(pix.width, pix.height, pix.stride, bytes(pix.samples))
 
     def outline(self) -> list[OutlineEntry]:
@@ -126,11 +164,29 @@ class PdfDocument:
         """Coincidencias de ``text`` (sin distinguir mayúsculas) en la página ``index``."""
         if not text:
             return []
-        page = self._doc[index]
+        page = self._text_page(index)
         # search_for devuelve coordenadas de la página sin rotar: las pasamos a las visibles.
         # El orden es el de lectura del texto.
         rects = [r * page.rotation_matrix for r in page.search_for(text)]
         return [SearchHit(index, r.x0, r.y0, r.x1, r.y1) for r in rects]
+
+    def _text_page(self, index: int):
+        """Página de donde leer el texto (buscar, seleccionar…).
+
+        Para leer el texto de una página rotada, PyMuPDF le quita la rotación un
+        instante y se la vuelve a poner. En el documento principal eso contaría
+        como un cambio (y estropearía deshacer/rehacer), así que el texto se lee
+        de una segunda copia del archivo, sin historial. Las anotaciones no
+        cambian el texto de la página, así que las dos copias siempre coinciden.
+        """
+        if self._text_doc is None:
+            self._text_doc = pymupdf.open(self._doc.name)
+        return self._text_doc[index]
+
+    def _close_text_doc(self) -> None:
+        if self._text_doc is not None:
+            self._text_doc.close()
+            self._text_doc = None
 
     # ---- Selección de texto ------------------------------------------------
 
@@ -140,7 +196,7 @@ class PdfDocument:
         Cada palabra es (x0, y0, x1, y1, texto, bloque, línea, nº de palabra).
         """
         if index not in self._words:
-            self._words[index] = self._doc[index].get_text("words")
+            self._words[index] = self._text_page(index).get_text("words")
         return self._words[index]
 
     def select_text(self, index: int, start: tuple[float, float],
@@ -180,30 +236,32 @@ class PdfDocument:
 
     def add_text_markup(self, selection: TextSelection, kind: MarkupKind, color: Color) -> None:
         """Crea una anotación PDF estándar (resaltado, subrayado o tachado) sobre la selección."""
-        page = self._doc[selection.page]
-        quads = [pymupdf.Rect(r).quad for r in selection.pdf_rects]
-        add = {
-            MarkupKind.HIGHLIGHT: page.add_highlight_annot,
-            MarkupKind.UNDERLINE: page.add_underline_annot,
-            MarkupKind.STRIKEOUT: page.add_strikeout_annot,
-        }[kind]
-        annot = add(quads)
-        annot.set_colors(stroke=color)
-        annot.update()
-        self._changed(selection.page)
+        with self._operation(f"añadir {kind_label(kind.value).lower()}", selection.page):
+            page = self._doc[selection.page]
+            quads = [pymupdf.Rect(r).quad for r in selection.pdf_rects]
+            add = {
+                MarkupKind.HIGHLIGHT: page.add_highlight_annot,
+                MarkupKind.UNDERLINE: page.add_underline_annot,
+                MarkupKind.STRIKEOUT: page.add_strikeout_annot,
+            }[kind]
+            annot = add(quads)
+            annot.set_colors(stroke=color)
+            annot.update()
+            self._changed(selection.page)
 
     def add_note(self, index: int, point: tuple[float, float], text: str,
                  color: Color) -> int:
         """Nota adhesiva con el icono centrado en ``point`` (puntos visibles). Devuelve su xref."""
-        page = self._doc[index]
-        half = NOTE_ICON_SIZE / 2
-        # PyMuPDF coloca el icono (siempre derecho) con su esquina visible en este punto.
-        top_left = pymupdf.Point(point[0] - half, point[1] - half) * page.derotation_matrix
-        annot = page.add_text_annot(top_left, text, icon="Note")
-        annot.set_colors(stroke=color)
-        annot.update()
-        self._changed(index)
-        return annot.xref
+        with self._operation("añadir nota", index):
+            page = self._doc[index]
+            half = NOTE_ICON_SIZE / 2
+            # PyMuPDF coloca el icono (siempre derecho) con su esquina visible en este punto.
+            top_left = pymupdf.Point(point[0] - half, point[1] - half) * page.derotation_matrix
+            annot = page.add_text_annot(top_left, text, icon="Note")
+            annot.set_colors(stroke=color)
+            annot.update()
+            self._changed(index)
+            return annot.xref
 
     def add_text_box(self, index: int, rect: tuple[float, float, float, float], text: str,
                      color: Color) -> int:
@@ -211,26 +269,27 @@ class PdfDocument:
 
         Un recuadro muy pequeño (un clic sin arrastrar) se amplía a un tamaño por defecto.
         """
-        page = self._doc[index]
-        x0, y0, x1, y1 = rect
-        x0, x1 = sorted((x0, x1))
-        y0, y1 = sorted((y0, y1))
-        if x1 - x0 < TEXT_BOX_MIN_SIZE or y1 - y0 < TEXT_BOX_MIN_SIZE:
-            x1, y1 = x0 + TEXT_BOX_DEFAULT_SIZE[0], y0 + TEXT_BOX_DEFAULT_SIZE[1]
-        visible = pymupdf.Rect(x0, y0, x1, y1)
-        # Que no se salga de la página: si sobresale, se desplaza hacia dentro.
-        bounds = page.rect
-        dx = min(0.0, bounds.x1 - visible.x1) + max(0.0, bounds.x0 - visible.x0)
-        dy = min(0.0, bounds.y1 - visible.y1) + max(0.0, bounds.y0 - visible.y0)
-        visible = (visible + (dx, dy, dx, dy)) & bounds
-        # Sin texto enriquecido el borde va del color del texto; el color elegido, de fondo.
-        annot = page.add_freetext_annot(
-            visible * page.derotation_matrix, text, fontsize=TEXT_BOX_FONT_SIZE,
-            text_color=(0, 0, 0), fill_color=_pale(color), border_width=1,
-            rotate=page.rotation)  # que el texto se lea derecho en páginas rotadas
-        annot.update()
-        self._changed(index)
-        return annot.xref
+        with self._operation("añadir cuadro de texto", index):
+            page = self._doc[index]
+            x0, y0, x1, y1 = rect
+            x0, x1 = sorted((x0, x1))
+            y0, y1 = sorted((y0, y1))
+            if x1 - x0 < TEXT_BOX_MIN_SIZE or y1 - y0 < TEXT_BOX_MIN_SIZE:
+                x1, y1 = x0 + TEXT_BOX_DEFAULT_SIZE[0], y0 + TEXT_BOX_DEFAULT_SIZE[1]
+            visible = pymupdf.Rect(x0, y0, x1, y1)
+            # Que no se salga de la página: si sobresale, se desplaza hacia dentro.
+            bounds = page.rect
+            dx = min(0.0, bounds.x1 - visible.x1) + max(0.0, bounds.x0 - visible.x0)
+            dy = min(0.0, bounds.y1 - visible.y1) + max(0.0, bounds.y0 - visible.y0)
+            visible = (visible + (dx, dy, dx, dy)) & bounds
+            # Sin texto enriquecido el borde va del color del texto; el color elegido, de fondo.
+            annot = page.add_freetext_annot(
+                visible * page.derotation_matrix, text, fontsize=TEXT_BOX_FONT_SIZE,
+                text_color=(0, 0, 0), fill_color=_pale(color), border_width=1,
+                rotate=page.rotation)  # que el texto se lea derecho en páginas rotadas
+            annot.update()
+            self._changed(index)
+            return annot.xref
 
     def add_ink(self, index: int, strokes: list[Stroke], color: Color, width: float) -> int:
         """Dibujo a mano alzada: anotación Ink con ``strokes`` (puntos visibles). Devuelve su xref.
@@ -238,24 +297,25 @@ class PdfDocument:
         Cada trazo es la lista de puntos por los que pasó el lápiz; se simplifica
         para no guardar puntos que no cambian la forma.
         """
-        page = self._doc[index]
-        derotate = page.derotation_matrix
-        ink_list = []
-        for stroke in strokes:
-            if not stroke:
-                continue
-            points = simplify_stroke([tuple(p) for p in stroke], INK_SIMPLIFY_TOLERANCE)
-            if len(points) == 1:
-                points = points * 2  # un clic sin mover: un punto (con extremos redondos)
-            ink_list.append([tuple(pymupdf.Point(p) * derotate) for p in points])
-        if not ink_list:
-            raise ValueError("El dibujo no tiene ningún punto")
-        annot = page.add_ink_annot(ink_list)
-        annot.set_border(width=width)
-        annot.set_colors(stroke=color)
-        annot.update()
-        self._changed(index)
-        return annot.xref
+        with self._operation("dibujar", index):
+            page = self._doc[index]
+            derotate = page.derotation_matrix
+            ink_list = []
+            for stroke in strokes:
+                if not stroke:
+                    continue
+                points = simplify_stroke([tuple(p) for p in stroke], INK_SIMPLIFY_TOLERANCE)
+                if len(points) == 1:
+                    points = points * 2  # un clic sin mover: un punto (con extremos redondos)
+                ink_list.append([tuple(pymupdf.Point(p) * derotate) for p in points])
+            if not ink_list:
+                raise ValueError("El dibujo no tiene ningún punto")
+            annot = page.add_ink_annot(ink_list)
+            annot.set_border(width=width)
+            annot.set_colors(stroke=color)
+            annot.update()
+            self._changed(index)
+            return annot.xref
 
     def _ink_strokes(self, index: int) -> list[_InkStrokes]:
         if index not in self._inks:
@@ -274,25 +334,26 @@ class PdfDocument:
         Si una anotación Ink tiene varios trazos (p. ej. hecha con otro programa),
         solo se quitan los tocados; si no le queda ninguno, se borra la anotación.
         """
-        page = self._doc[index]
-        derotate = page.derotation_matrix
-        a = tuple(pymupdf.Point(start) * derotate)
-        b = tuple(pymupdf.Point(end) * derotate)
-        erased = 0
-        for ink in self._ink_strokes(index):
-            tolerance = radius + ink.width / 2
-            keep = [s for s in ink.strokes if not stroke_touches(s, a, b, tolerance)]
-            if len(keep) == len(ink.strokes):
-                continue
-            erased += len(ink.strokes) - len(keep)
-            annot = self._load_annot(page, ink.xref)
-            if keep:
-                self._set_ink_list(page, annot, keep)
-            else:
-                page.delete_annot(annot)
-        if erased:
-            self._changed(index)
-        return erased
+        with self._operation("borrar con la goma", index):
+            page = self._doc[index]
+            derotate = page.derotation_matrix
+            a = tuple(pymupdf.Point(start) * derotate)
+            b = tuple(pymupdf.Point(end) * derotate)
+            erased = 0
+            for ink in self._ink_strokes(index):
+                tolerance = radius + ink.width / 2
+                keep = [s for s in ink.strokes if not stroke_touches(s, a, b, tolerance)]
+                if len(keep) == len(ink.strokes):
+                    continue
+                erased += len(ink.strokes) - len(keep)
+                annot = self._load_annot(page, ink.xref)
+                if keep:
+                    self._set_ink_list(page, annot, keep)
+                else:
+                    page.delete_annot(annot)
+            if erased:
+                self._changed(index)
+            return erased
 
     def _set_ink_list(self, page, annot, strokes: list[Stroke]) -> None:
         """Sustituye los trazos de una anotación Ink, conservando color, grosor, autor…"""
@@ -309,39 +370,46 @@ class PdfDocument:
         annot.update()  # regenera el aspecto y recalcula el recuadro
 
     def set_annotation_text(self, index: int, xref: int, text: str) -> None:
-        page = self._doc[index]
-        annot = self._load_annot(page, xref)
-        annot.set_info(content=text)
-        annot.update()  # regenera el aspecto; conserva letra y colores
-        self._changed(index)
+        with self._operation("editar texto", index):
+            page = self._doc[index]
+            annot = self._load_annot(page, xref)
+            annot.set_info(content=text)
+            annot.update()  # regenera el aspecto; conserva letra y colores
+            self._changed(index)
 
     def move_annotation(self, index: int, xref: int, dx: float, dy: float) -> None:
         """Desplaza una anotación ``dx``, ``dy`` puntos tal como se ve la página."""
-        page = self._doc[index]
-        annot = self._load_annot(page, xref)
-        visible = annot.rect * page.rotation_matrix
-        # Que no se salga de la página: se limita el desplazamiento.
-        bounds = page.rect
-        dx = min(max(dx, bounds.x0 - visible.x0), bounds.x1 - visible.x1)
-        dy = min(max(dy, bounds.y0 - visible.y0), bounds.y1 - visible.y1)
-        moved = visible + (dx, dy, dx, dy)
-        target = moved * page.derotation_matrix
-        annot.set_rect(target)
-        # Los iconos de nota no giran con la página y PyMuPDF los ancla por la esquina
-        # de la página sin rotar: en páginas rotadas quedan desplazados. Medimos dónde
-        # han caído y corregimos (es un desfase fijo, basta con una corrección).
-        actual = annot.rect * page.rotation_matrix
-        error = pymupdf.Point(moved.x0 - actual.x0, moved.y0 - actual.y0)
-        if abs(error) > 0.01:
-            shift = error * page.derotation_matrix - pymupdf.Point(0, 0) * page.derotation_matrix
-            annot.set_rect(target + (shift.x, shift.y, shift.x, shift.y))
-        annot.update()
-        self._changed(index)
+        with self._operation(f"mover {self._annot_label(index, xref)}", index):
+            page = self._doc[index]
+            annot = self._load_annot(page, xref)
+            visible = annot.rect * page.rotation_matrix
+            # Que no se salga de la página: se limita el desplazamiento.
+            bounds = page.rect
+            dx = min(max(dx, bounds.x0 - visible.x0), bounds.x1 - visible.x1)
+            dy = min(max(dy, bounds.y0 - visible.y0), bounds.y1 - visible.y1)
+            moved = visible + (dx, dy, dx, dy)
+            target = moved * page.derotation_matrix
+            annot.set_rect(target)
+            # Los iconos de nota no giran con la página y PyMuPDF los ancla por la esquina
+            # de la página sin rotar: en páginas rotadas quedan desplazados. Medimos dónde
+            # han caído y corregimos (es un desfase fijo, basta con una corrección).
+            actual = annot.rect * page.rotation_matrix
+            error = pymupdf.Point(moved.x0 - actual.x0, moved.y0 - actual.y0)
+            if abs(error) > 0.01:
+                shift = error * page.derotation_matrix - pymupdf.Point(0, 0) * page.derotation_matrix
+                annot.set_rect(target + (shift.x, shift.y, shift.x, shift.y))
+            annot.update()
+            self._changed(index)
 
     def delete_annotation(self, index: int, xref: int) -> None:
-        page = self._doc[index]
-        page.delete_annot(self._load_annot(page, xref))  # borra también su ventana emergente
-        self._changed(index)
+        with self._operation(f"borrar {self._annot_label(index, xref)}", index):
+            page = self._doc[index]
+            page.delete_annot(self._load_annot(page, xref))  # borra también su ventana emergente
+            self._changed(index)
+
+    def _annot_label(self, index: int, xref: int) -> str:
+        info = next((a for a in self.annotations(index) if a.xref == xref), None)
+        return info.label.lower() if info else "anotación"
 
     @staticmethod
     def _load_annot(page, xref: int):
@@ -375,7 +443,7 @@ class PdfDocument:
             rect = annot.rect * page.rotation_matrix
             text = annot.info.get("content", "").strip()
             if not text and annot.type[0] in _TEXT_MARKUP_TYPES and annot.vertices:
-                text = self._marked_text(page, annot.vertices)
+                text = self._marked_text(self._text_page(index), annot.vertices)
             result.append(AnnotationInfo(index, annot.type[1],
                                          tuple(stroke) if stroke else None,
                                          tuple(rect), annot.xref, text))
@@ -405,6 +473,123 @@ class PdfDocument:
                 return info
         return None
 
+    # ---- Deshacer y rehacer -----------------------------------------------
+
+    def _start_history(self) -> None:
+        """Empieza un historial vacío (al abrir o tras reescribir el archivo)."""
+        # Posición del historial tras el paso -> paso. La posición 0 es el archivo
+        # tal como se abrió o guardó.
+        self._steps: dict[int, HistoryStep] = {}
+        self._operation_open: _OpenOperation | None = None
+        try:
+            self._doc.journal_enable()
+            self._journal = True
+        except Exception:  # p. ej. un PDF muy dañado: se puede anotar, pero no deshacer
+            self._journal = False
+
+    def _position(self) -> int:
+        if not self._journal:
+            return 0
+        if self._operation_open is not None:
+            # MuPDF no deja consultarlo a mitad de una operación: hasta que termine,
+            # el historial está como al empezarla.
+            return self._operation_open.position
+        return self._doc.journal_position()[0]
+
+    def begin_operation(self, label: str) -> None:
+        """Agrupa en un solo paso de deshacer todos los cambios hasta ``end_operation``.
+
+        Sirve para gestos largos, como una pasada de goma que borra varios trazos.
+        """
+        if self._operation_open is not None:
+            return
+        position = self._position()
+        self._operation_open = _OpenOperation(label, position)
+        if self._journal:
+            self._doc.journal_start_op(label)
+
+    def end_operation(self) -> None:
+        operation, self._operation_open = self._operation_open, None
+        if operation is None or not self._journal:
+            return
+        self._doc.journal_stop_op()
+        position = self._position()
+        if position == operation.position:
+            return  # no ha cambiado nada: MuPDF no guarda el paso, nosotros tampoco
+        # Un cambio nuevo tras deshacer descarta lo que se podía rehacer.
+        self._steps = {k: v for k, v in self._steps.items() if k <= operation.position}
+        self._steps[position] = HistoryStep(operation.label, tuple(sorted(operation.pages)))
+        self._update_modified()
+
+    @contextmanager
+    def _operation(self, label: str, index: int):
+        """Todo cambio del documento va aquí dentro (MuPDF lo exige para poder deshacerlo)."""
+        if self._operation_open is not None:  # dentro de un grupo: se suma a ese paso
+            self._operation_open.pages.add(index)
+            yield
+            return
+        self.begin_operation(label)
+        self._operation_open.pages.add(index)
+        try:
+            yield
+        finally:
+            self.end_operation()
+
+    @property
+    def can_undo(self) -> bool:
+        position = self._position()
+        return any(k <= position for k in self._steps)
+
+    @property
+    def can_redo(self) -> bool:
+        position = self._position()
+        return any(k > position for k in self._steps)
+
+    @property
+    def undo_label(self) -> str | None:
+        position = self._position()
+        done = [k for k in self._steps if k <= position]
+        return self._steps[max(done)].label if done else None
+
+    @property
+    def redo_label(self) -> str | None:
+        position = self._position()
+        pending = [k for k in self._steps if k > position]
+        return self._steps[min(pending)].label if pending else None
+
+    def undo(self) -> HistoryStep | None:
+        """Deshace el último paso. Devuelve cuál era, o None si no había nada."""
+        if not self.can_undo or self._operation_open is not None:
+            return None
+        step = None
+        # MuPDF puede haber hecho pasos propios (p. ej. generar el aspecto de una
+        # anotación al pintarla): se deshacen junto con el nuestro anterior.
+        while step is None and self._doc.journal_can_do()["undo"]:
+            step = self._steps.get(self._position())
+            self._doc.journal_undo()
+        self._after_history_move()
+        return step
+
+    def redo(self) -> HistoryStep | None:
+        """Rehace el último paso deshecho. Devuelve cuál era, o None si no había nada."""
+        if not self.can_redo or self._operation_open is not None:
+            return None
+        step = None
+        while step is None and self._doc.journal_can_do()["redo"]:
+            self._doc.journal_redo()
+            step = self._steps.get(self._position())
+        self._after_history_move()
+        return step
+
+    def _after_history_move(self) -> None:
+        self._annots.clear()
+        self._inks.clear()
+        self._update_modified()
+
+    def _update_modified(self) -> None:
+        if self._journal and self._operation_open is None:
+            self.modified = self._position() != 0
+
     # ---- Guardar -----------------------------------------------------------
 
     def save(self, path=None) -> None:
@@ -417,6 +602,7 @@ class PdfDocument:
                     # Solo añade los cambios al final: rápido y respeta el resto del archivo.
                     self._doc.save(opened, incremental=True,
                                    encryption=pymupdf.PDF_ENCRYPT_KEEP)
+                    self._reopen(opened)  # historial nuevo (ver la nota de la clase)
                 else:
                     self._save_over_open_file(target)
             else:
@@ -435,22 +621,28 @@ class PdfDocument:
         temp = target.with_name(target.name + TEMP_SUFFIX)
         self._doc.save(temp, garbage=3, deflate=True, encryption=pymupdf.PDF_ENCRYPT_KEEP)
         self._doc.close()
+        self._close_text_doc()
         try:
             os.replace(temp, target)
         except OSError:
             # No se pudo (¿otro programa lo tiene abierto?): seguimos con la copia
             # temporal para no perder las anotaciones; el próximo guardado la limpia.
             self._doc = pymupdf.open(temp)
+            self._start_history()
             raise
         self._doc = pymupdf.open(target)
+        self._start_history()
 
     def _reopen(self, path: Path) -> None:
         old = self._doc
         self._doc = pymupdf.open(path)
+        self._start_history()
         old_name = Path(old.name)
         old.close()
+        self._close_text_doc()
         if old_name.name.endswith(TEMP_SUFFIX):
             old_name.unlink(missing_ok=True)
 
     def close(self) -> None:
+        self._close_text_doc()
         self._doc.close()
