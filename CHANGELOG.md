@@ -5,6 +5,8 @@ versión en GitHub y lo que se muestra en la app en **Buscar actualizaciones**.
 
 ## Sin publicar
 
+## 1.2.0
+
 - **Nuevo nombre: Anotop.at** (antes «Anotador PDF»). El programa se llama ahora
   `Anotop.at.exe` y el proyecto está en
   [github.com/bamdab7/anotop.at](https://github.com/bamdab7/anotop.at).
