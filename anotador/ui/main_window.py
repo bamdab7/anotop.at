@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QHBoxLayout,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QToolButton,
                                QVBoxLayout, QWidget)
 
+from anotador import GITHUB_REPO, __version__
 from anotador.core.annotations import MarkupKind
 from anotador.core.document import DocumentError, PdfDocument
 from anotador.core.geometry import MAX_ZOOM, MIN_ZOOM
@@ -24,6 +25,7 @@ from .text_dialog import TextDialog
 from .search_bar import SearchBar
 from .side_panel import SidePanel
 from .toolbars import CustomizeDialog, ToolBar, ToolbarPrefs
+from .update_dialog import UpdateDialog
 from .windows_dialog import DoubleClickDialog
 from . import theme
 from .widgets import Pill, SegmentedControl, TitleBlock, Toast
@@ -42,6 +44,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._doc: PdfDocument | None = None
         self._last_dir = str(Path.home())
+        self._closing_for_update = False  # al actualizar ya se preguntó por los cambios
 
         self.view = PageView(self)
         self.search_bar = SearchBar(self)
@@ -237,6 +240,12 @@ class MainWindow(QMainWindow):
                                          "PDF con doble clic")
         self.act_double_click.triggered.connect(self.show_double_click_dialog)
 
+        self.act_updates = QAction("Buscar &actualizaciones…", self)
+        self.act_updates.triggered.connect(self.show_update_dialog)
+
+        self.act_about = QAction(f"Acerca de {APP_NAME}", self)
+        self.act_about.triggered.connect(self.show_about)
+
         self.act_customize = QAction("&Personalizar barras de herramientas…", self)
         self.act_customize.triggered.connect(self.customize_toolbars)
 
@@ -297,13 +306,19 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.act_customize)
         view_menu.addAction(self.act_menu_bar)
 
+        help_menu = self.menuBar().addMenu("Ay&uda")
+        help_menu.addAction(self.act_updates)
+        help_menu.addSeparator()
+        help_menu.addAction(self.act_about)
+
         self.app_menu = QMenu("Menú", self)
-        for menu in (file_menu, edit_menu, view_menu):
+        for menu in (file_menu, edit_menu, view_menu, help_menu):
             self.app_menu.addMenu(menu)
         self.app_menu.addSeparator()
         self.app_menu.addAction(self.act_customize)
         self.app_menu.addAction(self.act_double_click)
         self.app_menu.addAction(self.act_menu_bar)
+        self.app_menu.addAction(self.act_updates)
         self.app_menu.addSeparator()
         self.app_menu.addAction(self.act_quit)
 
@@ -452,6 +467,29 @@ class MainWindow(QMainWindow):
     def show_double_click_dialog(self) -> None:
         DoubleClickDialog(self).exec()
 
+    def show_update_dialog(self) -> None:
+        UpdateDialog(self, before_install=self._confirm_discard_changes,
+                     quit_app=self._quit_for_update).exec()
+
+    def _quit_for_update(self) -> None:
+        """Cierra sin volver a preguntar por los cambios (ya se preguntó antes de
+        descargar) para que el actualizador pueda sustituir los archivos."""
+        self._closing_for_update = True
+        self.close()
+
+    def show_about(self) -> None:
+        url = f"https://github.com/{GITHUB_REPO}"
+        QMessageBox.about(
+            self, f"Acerca de {APP_NAME}",
+            f"<h3>{APP_NAME} {__version__}</h3>"
+            "<p>Visor de PDF para resaltar, subrayar, tachar, escribir notas, añadir "
+            "cuadros de texto y dibujar. Las anotaciones son estándar: se ven también en "
+            "el navegador, Acrobat o Vista Previa.</p>"
+            f"<p>Código fuente y novedades: <a href='{url}'>{url}</a></p>"
+            "<p>Software libre con licencia GNU AGPL v3.0. Usa "
+            "<a href='https://pymupdf.readthedocs.io'>PyMuPDF</a> (AGPL) y "
+            "<a href='https://www.qt.io/qt-for-python'>Qt for Python</a> (LGPL).</p>")
+
     def _set_markup_visible(self, visible: bool) -> None:
         """Al volver a mostrarlas, las herramientas vuelven a donde estaban."""
         current = self._toolbar_prefs.annotation_position
@@ -590,7 +628,7 @@ class MainWindow(QMainWindow):
             self.open_file(path)
 
     def closeEvent(self, event) -> None:
-        if not self._confirm_discard_changes():
+        if not self._closing_for_update and not self._confirm_discard_changes():
             event.ignore()
             return
         self._close_document()

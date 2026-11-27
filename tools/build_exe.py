@@ -3,8 +3,11 @@
 Uso (desde la carpeta del proyecto):
     .venv\\Scripts\\python.exe tools\\build_exe.py
 
-Resultado: dist\\AnotadorPDF\\AnotadorPDF.exe, junto con su carpeta _internal.
-Para usarla en otro sitio hay que copiar la carpeta AnotadorPDF entera, no solo el .exe.
+Resultado:
+  - dist\\AnotadorPDF\\AnotadorPDF.exe, junto con su carpeta _internal. Para usarla en
+    otro sitio hay que copiar la carpeta AnotadorPDF entera, no solo el .exe.
+  - dist\\AnotadorPDF-<versión>-windows.zip: esa carpeta comprimida. Es lo que se sube a
+    las Releases de GitHub y lo que descarga la app al actualizarse.
 
 Se usa el modo «carpeta» (onedir) y no un único .exe (onefile): un único .exe
 tiene que descomprimirse en una carpeta temporal cada vez que se abre, y con
@@ -177,11 +180,19 @@ def main() -> int:
         for problem in problems:
             print("  " + problem)
         return 1
+    from anotador import __version__
+    from anotador.core.updates import zip_name
+
+    archive = DIST / zip_name(__version__)
+    archive.unlink(missing_ok=True)
+    shutil.make_archive(str(archive.with_suffix("")), "zip", root_dir=DIST, base_dir=EXE_NAME)
+
     size = sum(f.stat().st_size for f in exe.parent.rglob("*") if f.is_file())
     print()
     print(f"Listo: {exe}")
     print(f"Tamaño de la carpeta: {size / 1e6:.0f} MB "
           f"(se han quitado {freed / 1e6:.0f} MB que la app no usa)")
+    print(f"Para publicar: {archive} ({archive.stat().st_size / 1e6:.0f} MB)")
     return 0
 
 

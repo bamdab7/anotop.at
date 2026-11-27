@@ -1,0 +1,58 @@
+# Publica una versión nueva al subir una etiqueta como «v1.1.0».
+# Crea el .exe, lo prueba y sube AnotadorPDF-<versión>-windows.zip a las Releases,
+# que es de donde la app descarga las actualizaciones. Ver «Publicar una versión» en el README.
+name: Publicar versión
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write  # para crear la release
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Instalar dependencias
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Comprobar que la etiqueta coincide con la versión del código
+        shell: python
+        run: |
+          import os, sys
+          sys.path.insert(0, ".")
+          from anotador import __version__
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("vV")
+          if tag != __version__:
+              sys.exit(f"La etiqueta v{tag} no coincide con __version__ = {__version__} "
+                       "(anotador/__init__.py). Cambia una de las dos.")
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Crear el .exe
+        run: python tools/build_exe.py
+
+      - name: Probar el .exe abriendo un PDF (sin pantalla)
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:ANOTADOR_SETTINGS_DIR = "$env:RUNNER_TEMP\prefs"
+          $pdf = "$env:RUNNER_TEMP\prueba.pdf"
+          $shot = "$env:RUNNER_TEMP\captura.png"
+          python -c "import pymupdf, sys; d = pymupdf.open(); d.new_page().insert_text((50, 80), 'Hola'); d.save(sys.argv[1])" $pdf
+          $p = Start-Process dist\AnotadorPDF\AnotadorPDF.exe -ArgumentList "`"$pdf`"", "--screenshot", "`"$shot`"" -PassThru -Wait
+          if ($p.ExitCode -ne 0 -or -not (Test-Path $shot)) { throw "El .exe no abrió el PDF (código $($p.ExitCode))" }
+
+      - name: Publicar la release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AnotadorPDF-*-windows.zip
+          generate_release_notes: true  # lista de cambios a partir de los commits

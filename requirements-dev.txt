@@ -1,0 +1,4 @@
+# Para desarrollar: la aplicación, más los tests y la creación del .exe
+-r requirements.txt
+pytest>=8
+pyinstaller>=6.10

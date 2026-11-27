@@ -1,0 +1,8 @@
+# Finales de línea normalizados en el repositorio (LF); Git los adapta al sistema al descargar.
+* text=auto
+
+# Binarios: no tocar
+*.png binary
+*.ico binary
+*.pdf binary
+*.zip binary

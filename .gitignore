@@ -1,9 +1,27 @@
+# Entorno y cachés de Python
 .venv/
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
+
+# Resultado de tools/build_exe.py (el .exe se publica en las Releases de GitHub)
 build/
 dist/
 *.spec
-# PDFs de prueba personales
+
+# PDFs: los de los tests se generan al vuelo; no se suben documentos personales
 *.pdf
+
+# Notas de trabajo locales (no forman parte del proyecto publicado)
+CLAUDE.md
+PLAN.md
+GUIA-CLAUDE-CODE.md
+.claude/
+
+# Editores y sistema
+.vscode/
+.idea/
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store
