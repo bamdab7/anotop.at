@@ -94,12 +94,14 @@ class ToolBar(QToolBar):
         self._separators[-1].append(self.addSeparator())
         self._sections[-1].append([])
 
-    def new_section(self) -> None:
+    def new_section(self) -> QAction:
+        """Espacio flexible y sección nueva. Devuelve la acción del espacio."""
         spacer = QWidget(self)
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.addWidget(spacer)
+        action = self.addWidget(spacer)
         self._sections.append([[]])
         self._separators.append([])
+        return action
 
     # ---- Personalización
 
@@ -194,6 +196,7 @@ class CustomizeDialog(QDialog):
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
         buttons.button(QDialogButtonBox.Ok).setText("Aceptar")
+        buttons.button(QDialogButtonBox.Ok).setDefault(True)  # la acción principal, en azul
         buttons.button(QDialogButtonBox.Cancel).setText("Cancelar")
         reset = buttons.addButton("Restaurar predeterminados", QDialogButtonBox.ResetRole)
         reset.clicked.connect(lambda: self._show(ToolbarPrefs()))

@@ -45,6 +45,9 @@ class AnnotateToolBar(ToolBar):
         self._pen_width = PEN_WIDTHS[1][1]
         self._text = False  # nombre junto a los iconos (solo cuando va en horizontal)
 
+        # Espacios flexibles a los lados: en horizontal, las herramientas van centradas
+        # (como la barra de marcación de Vista Previa). En vertical no hacen falta.
+        self._spacers = [self.new_section()]
         self.markup_actions: dict[MarkupKind, QAction] = {}
         for kind, (key, label, shortcut) in MARKUP_LABELS.items():
             action = QAction(label, self)
@@ -100,6 +103,7 @@ class AnnotateToolBar(ToolBar):
             width_menu.addAction(action)
         self._width_button.setMenu(width_menu)
         self.add_item("width", "Grosor del lápiz", self._width_button)
+        self._spacers.append(self.new_section())
 
         self._color_group.actions()[0].setChecked(True)
         for action, (_, width) in zip(self._width_group.actions(), PEN_WIDTHS):
@@ -120,6 +124,12 @@ class AnnotateToolBar(ToolBar):
     def set_text_beside_icons(self, enabled: bool) -> None:
         self._text = enabled
         super().set_text_beside_icons(enabled)
+        vertical = self.orientation() == Qt.Vertical
+        for spacer in self._spacers:
+            spacer.setVisible(not vertical)
+        self.setProperty("vertical", vertical)  # para la hoja de estilos
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     # ---- Estado
 

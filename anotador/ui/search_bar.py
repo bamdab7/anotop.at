@@ -9,10 +9,12 @@ import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QToolButton, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton, QToolButton, QWidget
 
 from anotador.core.document import PdfDocument
 from anotador.core.search import SearchHit, SearchResults
+
+from .icons import icon
 
 TYPING_DELAY_MS = 250  # espera tras teclear antes de empezar a buscar
 BATCH_TIME_S = 0.03    # tiempo máximo buscando en cada tanda
@@ -25,6 +27,8 @@ class SearchBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("search_bar")
+        self.setAttribute(Qt.WA_StyledBackground)
         self._doc: PdfDocument | None = None
         self._results: SearchResults | None = None
         self._next_page = 0
@@ -32,37 +36,37 @@ class SearchBar(QWidget):
         self.current_page_getter = lambda: 0  # la ventana lo sustituye
 
         self.edit = QLineEdit(self)
-        self.edit.setPlaceholderText("Buscar en el documento")
+        self.edit.setPlaceholderText("Buscar")
         self.edit.setClearButtonEnabled(True)
         self.edit.setMinimumWidth(220)
         self.edit.textChanged.connect(self._on_text_changed)
         self.edit.returnPressed.connect(self._on_return)
 
         self.prev_button = QToolButton(self)
-        self.prev_button.setArrowType(Qt.UpArrow)
+        self._set_icon(self.prev_button, "up", Qt.UpArrow)
         self.prev_button.setToolTip("Anterior (Mayús+Intro o Mayús+F3)")
         self.prev_button.clicked.connect(self.find_previous)
         self.next_button = QToolButton(self)
-        self.next_button.setArrowType(Qt.DownArrow)
+        self._set_icon(self.next_button, "down", Qt.DownArrow)
         self.next_button.setToolTip("Siguiente (Intro o F3)")
         self.next_button.clicked.connect(self.find_next)
 
         self.counter = QLabel(self)
+        self.counter.setObjectName("secondary")
         self.counter.setMinimumWidth(90)
 
-        close_button = QToolButton(self)
-        close_button.setText("✕")
-        close_button.setAutoRaise(True)
+        close_button = QPushButton("Hecho", self)  # como el banner de búsqueda de Safari
         close_button.setToolTip("Cerrar la búsqueda (Esc)")
         close_button.clicked.connect(self.close_bar)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 3, 6, 3)
-        layout.addWidget(QLabel("Buscar:", self))
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(6)
+        layout.addStretch(1)
+        layout.addWidget(self.counter)
         layout.addWidget(self.edit)
         layout.addWidget(self.prev_button)
         layout.addWidget(self.next_button)
-        layout.addWidget(self.counter)
         layout.addStretch(1)
         layout.addWidget(close_button)
 
@@ -77,6 +81,15 @@ class SearchBar(QWidget):
         self._batch_timer.timeout.connect(self._search_batch)
 
         self._update_controls()
+
+    @staticmethod
+    def _set_icon(button: QToolButton, name: str, fallback) -> None:
+        glyph = icon(name)
+        if glyph.isNull():
+            button.setArrowType(fallback)
+        else:
+            button.setIcon(glyph)
+        button.setAutoRaise(True)
 
     # ---- API pública -------------------------------------------------------
 

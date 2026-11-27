@@ -13,12 +13,12 @@ from anotador.core.document import PdfDocument
 from anotador.core.geometry import zoom_to_fit
 from anotador.core.night import NIGHT_DARK
 
-from .icons import icon, swatch_icon
+from .icons import swatch_icon
 
 THUMB_WIDTH = 120
 THUMB_HEIGHT = 160
 THUMB_CACHE_SIZE = 200
-THUMB_BORDER = QColor("#8a8a8a")
+THUMB_BORDER = QColor(0, 0, 0, 50)  # borde muy suave alrededor de cada miniatura
 SNIPPET_LENGTH = 80  # caracteres de texto que se ven de cada anotación en la lista
 
 
@@ -210,17 +210,8 @@ class SidePanel(QTabWidget):
         self._annotation_stack.addWidget(self.annotation_list)
         self.addTab(self._annotation_stack, "Anotaciones")
 
-        # Pestañas con icono y nombre en el tooltip: con texto no caben y se cortan.
-        for index, (name, label) in enumerate((("thumbnails", "Miniaturas"),
-                                               ("outline", "Índice"),
-                                               ("annotations", "Anotaciones"))):
-            tab_icon = icon(name)
-            if not tab_icon.isNull():
-                self.setTabIcon(index, tab_icon)
-                self.setTabText(index, "")
-            self.setTabToolTip(index, label)
-        self.setIconSize(QSize(18, 18))
-        self.tabBar().setExpanding(True)
+        # Las pestañas se eligen con el control segmentado que pone la ventana.
+        self.thumbnails.setObjectName("thumbnails")
 
         self.setMinimumWidth(THUMB_WIDTH + 50)
 

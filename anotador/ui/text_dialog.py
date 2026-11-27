@@ -15,7 +15,7 @@ class TextDialog(QDialog):
         self.editor.selectAll()
 
         buttons = QDialogButtonBox(self)
-        buttons.addButton("Aceptar", QDialogButtonBox.AcceptRole)
+        buttons.addButton("Aceptar", QDialogButtonBox.AcceptRole).setDefault(True)
         buttons.addButton("Cancelar", QDialogButtonBox.RejectRole)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)

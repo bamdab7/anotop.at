@@ -23,6 +23,8 @@ from .text_dialog import TextDialog
 from .search_bar import SearchBar
 from .side_panel import SidePanel
 from .toolbars import CustomizeDialog, ToolBar, ToolbarPrefs
+from . import theme
+from .widgets import Pill, SegmentedControl, TitleBlock, Toast
 
 APP_NAME = "Anotador PDF"
 SETTINGS_ORG = "AnotadorPDF"  # nombre para guardar las preferencias (registro de Windows)
@@ -41,6 +43,8 @@ class MainWindow(QMainWindow):
         self.search_bar.hide()
         self.search_bar.current_page_getter = lambda: self.view.current_page
         central = QWidget(self)
+        central.setObjectName("central")
+        central.setAttribute(Qt.WA_StyledBackground)
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
@@ -51,12 +55,27 @@ class MainWindow(QMainWindow):
         self.side_panel = SidePanel(self)
         self.side_dock = QDockWidget("Panel lateral", self)
         self.side_dock.setObjectName("side_panel")
-        self.side_dock.setWidget(self.side_panel)
+        sidebar = QWidget(self)
+        sidebar.setObjectName("sidebar")
+        sidebar.setAttribute(Qt.WA_StyledBackground)
+        self.sidebar_switch = SegmentedControl(
+            [(icon("thumbnails"), "Miniaturas"), (icon("outline"), "Índice"),
+             (icon("annotations"), "Anotaciones")], sidebar)
+        self.sidebar_switch.currentChanged.connect(self.side_panel.setCurrentIndex)
+        self.side_panel.currentChanged.connect(self.sidebar_switch.set_current)
+        self.side_panel.tabBar().hide()  # lo sustituye el control segmentado
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(10, 10, 6, 0)
+        sidebar_layout.setSpacing(8)
+        sidebar_layout.addWidget(self.sidebar_switch)
+        sidebar_layout.addWidget(self.side_panel)
+        self.side_dock.setWidget(sidebar)
         self.side_dock.setTitleBarWidget(QWidget(self.side_dock))  # sin barra de título
         self.side_dock.setFeatures(QDockWidget.DockWidgetClosable)
         self.side_dock.setAllowedAreas(Qt.LeftDockWidgetArea)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.side_dock)
-        self.resizeDocks([self.side_dock], [190], Qt.Horizontal)
+        self.resizeDocks([self.side_dock], [200], Qt.Horizontal)
+        self.toast = Toast(self.view)  # avisos breves sobre el documento
         self.setAcceptDrops(True)
         self.resize(1000, 800)
 
@@ -194,6 +213,13 @@ class MainWindow(QMainWindow):
         self.act_next_page.triggered.connect(
             lambda: self.view.go_to_page(self.view.current_page + 1))
 
+        self.act_markup = QAction("Herramientas de &marcación", self)
+        self.act_markup.setCheckable(True)
+        self.act_markup.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self.act_markup.setToolTip("Mostrar u ocultar las herramientas de marcación "
+                                   "(Ctrl+Mayús+A)")
+        self.act_markup.toggled.connect(self._set_markup_visible)
+
         self.act_customize = QAction("&Personalizar barras de herramientas…", self)
         self.act_customize.triggered.connect(self.customize_toolbars)
 
@@ -209,7 +235,8 @@ class MainWindow(QMainWindow):
                              (self.act_next_page, "next"), (self.act_zoom_in, "zoom_in"),
                              (self.act_zoom_out, "zoom_out"), (self.act_fit_width, "fit_width"),
                              (self.act_find, "find"), (self.act_night, "night"),
-                             (self.act_copy, "copy"), (self.act_customize, "settings")):
+                             (self.act_copy, "copy"), (self.act_customize, "settings"),
+                             (self.act_markup, "markup")):
             action.setIcon(icon(name))
 
     def _create_menus(self) -> None:
@@ -236,6 +263,7 @@ class MainWindow(QMainWindow):
         # En el menú se ven nombres completos; en la barra, los símbolos + y −.
         view_menu = self.menuBar().addMenu("&Ver")
         view_menu.addAction(self.act_side_panel)
+        view_menu.addAction(self.act_markup)
         view_menu.addSeparator()
         view_menu.addAction(self.act_previous_page)
         view_menu.addAction(self.act_next_page)
@@ -260,52 +288,38 @@ class MainWindow(QMainWindow):
         self.app_menu.addAction(self.act_quit)
 
     def _create_toolbars(self) -> None:
-        """Barra superior (como Papers o Edge): a la izquierda archivo e historial;
-        en el centro páginas y zoom; a la derecha buscar y modo noche."""
+        """Barra superior al estilo de Vista Previa (macOS).
+
+        A la izquierda, el panel lateral y el nombre del documento; en el centro,
+        páginas y zoom en «pastillas»; a la derecha, archivo, marcación, buscar,
+        modo noche y el menú «⋯». Las herramientas de marcación van en otra barra,
+        debajo y centrada, que se muestra u oculta con su botón.
+        """
         bar = ToolBar("Barra superior", "main_toolbar", self)
         self.main_bar = bar
         self.addToolBar(Qt.TopToolBarArea, bar)
 
-        menu_button = QToolButton(self)
-        menu_button.setIcon(icon("menu"))
-        menu_button.setText("Menú")
-        menu_button.setToolTip("Menú")
-        menu_button.setMenu(self.app_menu)
-        menu_button.setPopupMode(QToolButton.InstantPopup)
-        menu_button.setAutoRaise(True)
-        menu_button.setStyleSheet("QToolButton::menu-indicator { image: none; }")
-        bar.add_item("menu", "Menú", menu_button, fixed=True, text=False)
         bar.add_item("side_panel", "Panel lateral", self.act_side_panel, text=False)
-        bar.new_group()
-        bar.add_item("open", "Abrir", self.act_open)
-        bar.add_item("save", "Guardar", self.act_save)
-        bar.add_item("save_as", "Guardar como", self.act_save_as)
-        bar.new_group()
-        bar.add_item("undo", "Deshacer", self.act_undo)
-        bar.add_item("redo", "Rehacer", self.act_redo)
+        self.title_block = TitleBlock(self)
+        bar.add_item("title", "Nombre del documento y página", self.title_block, text=False)
 
         bar.new_section()
         self.page_edit = QLineEdit(self)
-        self.page_edit.setFixedWidth(44)
-        self.page_edit.setAlignment(Qt.AlignCenter)
+        self.page_edit.setFixedWidth(36)
+        self.page_edit.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.page_edit.setToolTip("Escribe un número de página y pulsa Intro")
         self.page_edit.returnPressed.connect(self._on_page_entered)
         self.page_edit.editingFinished.connect(self._show_current_page)
         self.page_total = QLabel(" / 0", self)
-        page_box = QWidget(self)
-        page_layout = QHBoxLayout(page_box)
-        page_layout.setContentsMargins(4, 0, 4, 0)
-        page_layout.setSpacing(0)
-        page_layout.addWidget(self.page_edit)
-        page_layout.addWidget(self.page_total)
-        bar.add_item("pages", "Páginas (anterior, número, siguiente)",
-                     self.act_previous_page, page_box, self.act_next_page, text=False)
-        bar.new_group()
+        self.page_total.setObjectName("secondary")
+        pages = Pill(self.act_previous_page, self.page_edit, self.page_total,
+                     self.act_next_page, parent=self)
+        bar.add_item("pages", "Páginas (anterior, número, siguiente)", pages, text=False)
         self.zoom_box = QComboBox(self)
         self.zoom_box.setEditable(True)
         self.zoom_box.setInsertPolicy(QComboBox.NoInsert)
         self.zoom_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.zoom_box.setMinimumContentsLength(6)  # «100 %»; la lista se abre más ancha
+        self.zoom_box.setMinimumContentsLength(5)  # «100 %»; la lista se abre más ancha
         self.zoom_box.view().setMinimumWidth(
             self.zoom_box.fontMetrics().horizontalAdvance(FIT_WIDTH_TEXT) + 40)
         self.zoom_box.setToolTip("Zoom: elige un valor o escribe un porcentaje")
@@ -314,16 +328,32 @@ class MainWindow(QMainWindow):
             self.zoom_box.addItem(f"{percent} %", percent)
         self.zoom_box.activated.connect(self._on_zoom_chosen)
         self.zoom_box.lineEdit().returnPressed.connect(self._on_zoom_typed)
-        bar.add_item("zoom", "Zoom (alejar, porcentaje, acercar)",
-                     self.act_zoom_out, self.zoom_box, self.act_zoom_in, text=False)
+        zoom = Pill(self.act_zoom_out, self.zoom_box, self.act_zoom_in, parent=self)
+        bar.add_item("zoom", "Zoom (alejar, porcentaje, acercar)", zoom, text=False)
         bar.add_item("fit_width", "Ajustar al ancho", self.act_fit_width, text=False)
 
         bar.new_section()
+        bar.add_item("open", "Abrir", self.act_open)
+        bar.add_item("save", "Guardar", self.act_save)
+        bar.add_item("save_as", "Guardar como", self.act_save_as)
+        bar.add_item("undo", "Deshacer", self.act_undo)
+        bar.add_item("redo", "Rehacer", self.act_redo)
+        bar.new_group()
+        bar.add_item("markup", "Marcación", self.act_markup)
         bar.add_item("find", "Buscar", self.act_find)
         bar.add_item("night", "Modo noche", self.act_night)
+        menu_button = QToolButton(self)
+        menu_button.setIcon(icon("more"))
+        menu_button.setText("Más")
+        menu_button.setToolTip("Más opciones")
+        menu_button.setMenu(self.app_menu)
+        menu_button.setPopupMode(QToolButton.InstantPopup)
+        menu_button.setAutoRaise(True)
+        bar.add_item("menu", "Más", menu_button, fixed=True, text=False)
 
         self.annotate_bar = AnnotateToolBar(self)
-        self.addToolBar(Qt.LeftToolBarArea, self.annotate_bar)
+        self.addToolBarBreak(Qt.TopToolBarArea)  # las herramientas, en su propia fila
+        self.addToolBar(Qt.TopToolBarArea, self.annotate_bar)
 
         for toolbar in (self.main_bar, self.annotate_bar):
             toolbar.customizeRequested.connect(self.customize_toolbars)
@@ -336,7 +366,7 @@ class MainWindow(QMainWindow):
             self.act_redo, self.act_find, self.act_find_next, self.act_find_previous,
             self.act_side_panel, self.act_zoom_in, self.act_zoom_out, self.act_actual_size,
             self.act_fit_width, self.act_night, self.act_previous_page, self.act_next_page,
-            self.act_menu_bar, *self.annotate_bar.all_actions()])
+            self.act_menu_bar, self.act_markup, *self.annotate_bar.all_actions()])
 
     # ---- Personalizar las barras -------------------------------------------
 
@@ -375,9 +405,11 @@ class MainWindow(QMainWindow):
             self.annotate_bar.show()
         for toolbar in (self.main_bar, self.annotate_bar):
             toolbar.set_text_beside_icons(prefs.text_beside_icons)
-        self.act_menu_bar.blockSignals(True)
-        self.act_menu_bar.setChecked(prefs.menu_bar)
-        self.act_menu_bar.blockSignals(False)
+        for action, checked in ((self.act_menu_bar, prefs.menu_bar),
+                                (self.act_markup, position != AnnotationBarPosition.HIDDEN)):
+            action.blockSignals(True)
+            action.setChecked(checked)
+            action.blockSignals(False)
         self.menuBar().setVisible(prefs.menu_bar)
 
     def _change_toolbar_prefs(self, **changes) -> None:
@@ -396,6 +428,43 @@ class MainWindow(QMainWindow):
 
     def _set_menu_bar_visible(self, visible: bool) -> None:
         self._change_toolbar_prefs(menu_bar=visible)
+
+    def _set_markup_visible(self, visible: bool) -> None:
+        """Al volver a mostrarlas, las herramientas vuelven a donde estaban."""
+        current = self._toolbar_prefs.annotation_position
+        if visible:
+            position = annotation_position(
+                self._settings.value("toolbar/annotation_shown_position"))
+            if position == AnnotationBarPosition.HIDDEN:
+                position = AnnotationBarPosition.TOP
+        else:
+            if current != AnnotationBarPosition.HIDDEN:
+                self._settings.setValue("toolbar/annotation_shown_position", current.value)
+            position = AnnotationBarPosition.HIDDEN
+        self._change_toolbar_prefs(annotation_position=position)
+
+    # ---- Aspecto: barra de título y avisos ------------------------------------
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        colors = theme.current()
+        if colors is not None:  # barra de título del color de la barra de herramientas
+            theme.match_title_bar(self, colors.toolbar, colors is theme.DARK)
+
+    def notify(self, text: str) -> None:
+        """Aviso breve sobre el documento (sustituye a la barra de estado)."""
+        self.toast.show_message(text)
+
+    def _update_title(self) -> None:
+        doc = self._doc
+        if doc is None:
+            self.title_block.set_text(APP_NAME, "Ningún documento abierto")
+            return
+        page = self.view.current_page
+        subtitle = f"Página {page + 1} de {doc.page_count}" if page >= 0 else ""
+        if doc.modified:
+            subtitle += " · Editado"
+        self.title_block.set_text(doc.path.name, subtitle)
 
     # ---- Abrir archivos ----------------------------------------------------
 
@@ -447,7 +516,6 @@ class MainWindow(QMainWindow):
             # «&1»…«&9» permiten elegir con el teclado; «&» del nombre se escribe «&&».
             prefix = f"&{i}" if i < 10 else "1&0"
             action = menu.addAction(f"{prefix}  {label.replace('&', '&&')}")
-            action.setStatusTip(path)  # la ruta completa se ve en la barra de estado
             action.setToolTip(path)
             action.triggered.connect(lambda _=False, p=path: self._open_recent(p))
         if paths:
@@ -532,6 +600,7 @@ class MainWindow(QMainWindow):
         self.act_next_page.setEnabled(0 <= page < self.view.page_count - 1)
 
     def _on_page_changed(self, page: int) -> None:
+        self._update_title()
         if not self.page_edit.hasFocus():
             self._show_current_page()
         else:  # mientras se escribe el número, solo los botones ‹ ›
@@ -678,8 +747,7 @@ class MainWindow(QMainWindow):
     def _delete_annotation(self, page: int, xref: int) -> None:
         if self._apply(lambda: self._doc.delete_annotation(page, xref)):
             self._page_changed(page)
-            self.statusBar().showMessage(
-                "Anotación borrada. Si te has equivocado, cierra sin guardar.", 5000)
+            self.notify("Anotación borrada · Ctrl+Z para deshacer")
 
     def _show_annotation(self, info) -> None:
         self.view.show_annotation(info)
@@ -704,7 +772,7 @@ class MainWindow(QMainWindow):
         self.view.select_annotation(None)
         self.side_panel.set_annotations(self._doc.all_annotations())
         self._update_modified()
-        self.statusBar().showMessage(f"{verb}: {step.label}", 3000)
+        self.notify(f"{verb}: {step.label}")
 
     def _update_history_actions(self) -> None:
         doc = self._doc
@@ -737,6 +805,7 @@ class MainWindow(QMainWindow):
         title = f"{self._doc.path.name}[*] — {APP_NAME}" if self._doc else APP_NAME
         self.setWindowTitle(title)
         self.setWindowModified(modified)
+        self._update_title()
 
     def save(self) -> bool:
         """Guarda en el archivo actual. Devuelve False si no se pudo."""
@@ -767,7 +836,7 @@ class MainWindow(QMainWindow):
         self.view.select_annotation(None)
         self.side_panel.set_annotations(self._doc.all_annotations())
         self._update_modified()
-        self.statusBar().showMessage(f"Guardado en «{self._doc.path.name}»", 4000)
+        self.notify(f"Guardado en «{self._doc.path.name}»")
         return True
 
     def _confirm_discard_changes(self) -> bool:

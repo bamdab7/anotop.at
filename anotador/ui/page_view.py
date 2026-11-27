@@ -21,6 +21,8 @@ from anotador.core.geometry import (clamp_zoom, pixels_to_points, points_to_pixe
                                     zoom_out, zoom_to_fit_width)
 from anotador.core.layout import MARGIN_PX, DocumentPoint, PageLayout
 from anotador.core.night import NIGHT_DARK, night_color
+
+from . import theme
 from anotador.core.search import SearchHit, SearchResults
 
 CACHE_SIZE = 24          # páginas renderizadas que se guardan en memoria
@@ -155,6 +157,7 @@ class PageView(QAbstractScrollArea):
 
         # Barra vertical siempre visible: así "ajustar al ancho" no cambia el
         # ancho disponible al aparecer o desaparecer la barra.
+        self.setFrameShape(QAbstractScrollArea.NoFrame)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.verticalScrollBar().setSingleStep(40)
@@ -282,6 +285,9 @@ class PageView(QAbstractScrollArea):
     def _background(self) -> QColor:
         if self._night:
             return NIGHT_BACKGROUND
+        colors = theme.current()
+        if colors is not None:
+            return QColor(colors.content)
         dark_theme = self.palette().color(QPalette.Window).lightness() < 128
         return DARK_BACKGROUND if dark_theme else BACKGROUND
 

@@ -15,37 +15,43 @@ from PySide6.QtGui import (QColor, QFont, QFontDatabase, QGuiApplication, QIcon,
 
 from anotador.core.annotations import Color
 
+from . import theme
+
 ICON_PX = 64  # se dibuja grande y Qt lo reduce: nítido también en pantallas escaladas
 ICON_FONTS = ("Segoe Fluent Icons", "Segoe MDL2 Assets")
 
 # Código de cada símbolo en la fuente (comprobados uno a uno dibujándolos).
 GLYPHS = {
-    "menu": "",
-    "side_panel": "",
-    "open": "",
-    "save": "",
-    "save_as": "",
-    "undo": "",
-    "redo": "",
-    "previous": "",
-    "next": "",
-    "zoom_in": "",
-    "zoom_out": "",
-    "fit_width": "",
-    "find": "",
-    "night": "",
-    "copy": "",
-    "highlight": "",
-    "underline": "",
-    "strikeout": "",
-    "note": "",
-    "text_box": "",
-    "pen": "",
-    "eraser": "",
-    "settings": "",
-    "thumbnails": "",
-    "outline": "",
-    "annotations": "",
+    "menu": "\ue700",
+    "side_panel": "\ue8a0",
+    "open": "\ue838",
+    "save": "\ue74e",
+    "save_as": "\ue792",
+    "undo": "\ue7a7",
+    "redo": "\ue7a6",
+    "previous": "\ue76b",
+    "next": "\ue76c",
+    "zoom_in": "\ue8a3",
+    "zoom_out": "\ue71f",
+    "fit_width": "\ue799",
+    "find": "\ue721",
+    "night": "\ue708",
+    "copy": "\ue8c8",
+    "highlight": "\ue7e6",
+    "underline": "\ue8dc",
+    "strikeout": "\uede0",
+    "note": "\ue70b",
+    "text_box": "\ue8d2",
+    "pen": "\uedc6",
+    "eraser": "\ue75c",
+    "settings": "\ue713",
+    "more": "\ue712",
+    "markup": "\ue70f",
+    "up": "\ue70e",
+    "down": "\ue70d",
+    "thumbnails": "\ue8a9",
+    "outline": "\ue8a4",
+    "annotations": "\ue90a",
 }
 
 
@@ -56,6 +62,10 @@ def icon_font_family() -> str | None:
 
 
 def _foreground() -> QColor:
+    """Color de los iconos: el del tema (gris suave, como en macOS) o el del texto."""
+    colors = theme.current()
+    if colors is not None:
+        return QColor(colors.icon)
     return QGuiApplication.palette().color(QPalette.WindowText)
 
 

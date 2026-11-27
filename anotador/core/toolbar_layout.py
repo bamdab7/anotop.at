@@ -7,17 +7,18 @@ añade un botón nuevo, aparece sin que haya que tocar las preferencias.
 
 from enum import Enum
 
-# Ocultos mientras el usuario no diga otra cosa.
-DEFAULT_HIDDEN = frozenset({"save_as"})
+# Ocultos mientras el usuario no diga otra cosa: como en las apps de Apple, la
+# barra lleva solo lo esencial (los atajos de teclado funcionan igualmente).
+DEFAULT_HIDDEN = frozenset({"open", "save_as", "undo", "redo"})
 
 
 class AnnotationBarPosition(Enum):
     LEFT = "left"      # vertical, a la izquierda (como en Acrobat)
-    TOP = "top"        # horizontal, debajo de la barra principal
+    TOP = "top"        # horizontal y centrada, debajo de la barra principal (Vista Previa)
     HIDDEN = "hidden"
 
 
-DEFAULT_ANNOTATION_POSITION = AnnotationBarPosition.LEFT
+DEFAULT_ANNOTATION_POSITION = AnnotationBarPosition.TOP
 
 
 def hidden_items(value, known: set[str]) -> set[str]:
