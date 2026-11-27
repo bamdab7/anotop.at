@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QDockWidget, QFileDialog, QLabel, QLineEdit, QMai
 
 from anotador.core.annotations import MarkupKind
 from anotador.core.document import DocumentError, PdfDocument
+from anotador.core.recent import add_recent, recent_labels, remove_recent
 
 from .annotate_toolbar import AnnotateToolBar
 from .page_view import PageView
@@ -86,6 +87,7 @@ class MainWindow(QMainWindow):
         self._settings = QSettings(QSettings.defaultFormat(), QSettings.UserScope,
                                    SETTINGS_ORG, APP_NAME)
         self.act_night.setChecked(self._settings.value("night_mode", False, type=bool))
+        self._rebuild_recent_menu()
         self._update_ui()
 
     # ---- Construcción ------------------------------------------------------
@@ -169,6 +171,7 @@ class MainWindow(QMainWindow):
     def _create_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&Archivo")
         file_menu.addAction(self.act_open)
+        self.recent_menu = file_menu.addMenu("Abrir &reciente")
         file_menu.addAction(self.act_save)
         file_menu.addAction(self.act_save_as)
         file_menu.addSeparator()
@@ -261,11 +264,55 @@ class MainWindow(QMainWindow):
         self._close_document()
         self._doc = doc
         self._last_dir = str(doc.path.parent)
+        self._remember_recent(doc.path)
         self.view.set_document(doc)
         self.side_panel.set_document(doc)
         self.search_bar.set_document(doc)
         self._update_ui()
         return True
+
+    # ---- Archivos recientes ------------------------------------------------
+
+    def _recent_files(self) -> list[str]:
+        value = self._settings.value("recent_files", [])
+        if isinstance(value, str):  # el registro devuelve un texto si solo hay uno
+            value = [value]
+        return [str(p) for p in value or []]
+
+    def _set_recent_files(self, paths: list[str]) -> None:
+        self._settings.setValue("recent_files", paths)
+        self._rebuild_recent_menu()
+
+    def _remember_recent(self, path) -> None:
+        self._set_recent_files(add_recent(self._recent_files(), path))
+
+    def _rebuild_recent_menu(self) -> None:
+        menu = self.recent_menu
+        menu.clear()
+        paths = self._recent_files()
+        for i, (path, label) in enumerate(zip(paths, recent_labels(paths)), start=1):
+            # «&1»…«&9» permiten elegir con el teclado; «&» del nombre se escribe «&&».
+            prefix = f"&{i}" if i < 10 else "1&0"
+            action = menu.addAction(f"{prefix}  {label.replace('&', '&&')}")
+            action.setStatusTip(path)  # la ruta completa se ve en la barra de estado
+            action.setToolTip(path)
+            action.triggered.connect(lambda _=False, p=path: self._open_recent(p))
+        if paths:
+            menu.addSeparator()
+            menu.addAction("&Limpiar la lista", lambda: self._set_recent_files([]))
+        else:
+            menu.addAction("(ninguno)").setEnabled(False)
+        menu.setToolTipsVisible(True)
+
+    def _open_recent(self, path: str) -> None:
+        if not Path(path).is_file():
+            QMessageBox.information(
+                self, "Archivo no encontrado",
+                f"«{Path(path).name}» ya no está en\n{Path(path).parent}\n\n"
+                "Puede que se haya movido, renombrado o borrado. Se quita de la lista.")
+            self._set_recent_files(remove_recent(self._recent_files(), path))
+            return
+        self.open_file(path)
 
     def _close_document(self) -> None:
         if self._doc is not None:
@@ -540,6 +587,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No se pudo guardar", str(exc))
             return False
         self._last_dir = str(self._doc.path.parent)
+        self._remember_recent(self._doc.path)  # con «Guardar como», el archivo nuevo
         # Al guardar, los objetos del PDF pueden renumerarse: leemos de nuevo la lista.
         self.view.select_annotation(None)
         self.side_panel.set_annotations(self._doc.all_annotations())
