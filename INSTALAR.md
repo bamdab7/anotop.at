@@ -119,6 +119,10 @@ antivirus.
 Repite el paso 4 (punto 2) y vuelve a intentarlo. Si acabas de registrarlo, a veces hay
 que cerrar y volver a abrir el Explorador.
 
+**¿El modo noche cambia mi PDF?**
+No. El modo noche (Ctrl+I) solo oscurece la página en la pantalla de Anotop.at. Al guardar,
+el PDF conserva sus colores originales, y en otros lectores se ve como siempre.
+
 **¿Dónde se guardan mis anotaciones?**
 Dentro del propio PDF, cuando pulsas **Guardar** (Ctrl+S). Se ven también en el navegador,
 en Acrobat o en cualquier otro lector de PDF.

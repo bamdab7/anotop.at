@@ -27,7 +27,9 @@ se modifica nunca.
 
 - **Lectura:** scroll continuo, zoom, miniaturas, índice del documento, búsqueda con
   contador de resultados («3 de 12») y modo noche, que oscurece la página sin alterar los
-  colores de los resaltados.
+  colores de los resaltados. El modo noche solo cambia cómo se ve el documento en la app:
+  el archivo PDF no se modifica y se sigue viendo con sus colores originales en otros
+  lectores.
 - **Anotaciones:** resaltar, subrayar y tachar texto (también desde una mini barra que
   aparece al seleccionarlo), notas adhesivas, cuadros de texto y dibujo con lápiz y goma.
   Las notas y los cuadros se pueden mover, editar y borrar.
