@@ -1,4 +1,5 @@
-"""Anotador PDF: visor y anotador de PDFs."""
+"""Anotop.at: visor y anotador de PDFs."""
 
 __version__ = "1.1.0"  # súbela antes de publicar una versión nueva (ver README)
-GITHUB_REPO = "bamdab7/anotador-pdf"  # de aquí se descargan las actualizaciones
+APP_NAME = "Anotop.at"  # nombre que ve el usuario (ventana, diálogos, «Abrir con»)
+GITHUB_REPO = "bamdab7/anotop.at"  # de aquí se descargan las actualizaciones

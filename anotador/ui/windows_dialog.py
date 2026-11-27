@@ -43,10 +43,10 @@ class DoubleClickDialog(QDialog):
         steps = QLabel(
             "<b>Cómo hacerlo</b><ol style='margin-left: -20px'>"
             "<li>Pulsa <b>Registrar en Windows</b>.</li>"
-            "<li>En la ventana de Windows que se abre, elige <b>Anotador PDF</b> "
+            f"<li>En la ventana de Windows que se abre, elige <b>{APP_NAME}</b> "
             "para los archivos <b>.pdf</b>.</li></ol>"
             "También puedes hacerlo desde el Explorador: clic derecho en un PDF › "
-            "<i>Abrir con</i> › <i>Elegir otra aplicación</i> › Anotador PDF › "
+            f"<i>Abrir con</i> › <i>Elegir otra aplicación</i> › {APP_NAME} › "
             "<i>Siempre</i>.<br><br>"
             "Si después mueves la carpeta del programa, vuelve a registrarlo.", self)
         steps.setWordWrap(True)
@@ -78,7 +78,7 @@ class DoubleClickDialog(QDialog):
     def _refresh(self) -> None:
         if self._exe is None or self._registry is None:
             self.status.setText(
-                "Esta opción solo está disponible en la versión .exe de Anotador PDF "
+                f"Esta opción solo está disponible en la versión .exe de {APP_NAME} "
                 "(se crea con <code>tools\\build_exe.py</code>).")
             for button in (self.register_button, self.settings_button,
                            self.unregister_button):
@@ -87,12 +87,12 @@ class DoubleClickDialog(QDialog):
         registered = is_registered(self._registry, self._exe)
         other = registered_command(self._registry)
         if registered:
-            text = "✓ Anotador PDF está registrado en Windows."
+            text = f"✓ {APP_NAME} está registrado en Windows."
         elif other:
-            text = ("Anotador PDF está registrado desde otra carpeta. Pulsa "
+            text = (f"{APP_NAME} está registrado desde otra carpeta. Pulsa "
                     "<b>Registrar en Windows</b> para usar esta.")
         else:
-            text = "Anotador PDF aún no está registrado en Windows."
+            text = f"{APP_NAME} aún no está registrado en Windows."
         self.status.setText(text)
         self.register_button.setText("Registrar de nuevo" if registered
                                      else "Registrar en Windows")

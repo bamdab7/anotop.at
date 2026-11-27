@@ -1,8 +1,8 @@
-"""Punto de entrada de Anotador PDF.
+"""Punto de entrada de Anotop.at.
 
-    AnotadorPDF.exe [archivo.pdf] [--screenshot captura.png]
+    Anotop.at.exe [archivo.pdf] [--screenshot captura.png]
 
-Windows llama así al .exe al hacer doble clic en un PDF: ``"AnotadorPDF.exe" "C:\\…\\x.pdf"``.
+Windows llama así al .exe al hacer doble clic en un PDF: ``"Anotop.at.exe" "C:\\…\\x.pdf"``.
 ``--screenshot`` sirve para comprobar el .exe sin mirar la pantalla: abre el PDF,
 espera a que se dibuje, guarda una captura de la ventana y se cierra.
 """
@@ -12,11 +12,12 @@ import sys
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
+from anotador import APP_NAME
 from anotador.ui.app_icon import app_icon
-from anotador.ui.main_window import APP_NAME, MainWindow
+from anotador.ui.main_window import MainWindow
 from anotador.ui.theme import apply_theme
 
-APP_USER_MODEL_ID = "AnotadorPDF.App"
+APP_USER_MODEL_ID = "AnotadorPDF.App"  # interno: no cambia con el nombre de la app
 SCREENSHOT_DELAY_MS = 2500
 
 

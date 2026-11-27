@@ -1,6 +1,7 @@
 # Publica una versión nueva al subir una etiqueta como «v1.1.0».
-# Crea el .exe (un solo archivo), lo prueba y sube AnotadorPDF.exe a las Releases,
-# que es de donde la app descarga las actualizaciones. Ver «Publicar una versión» en el README.
+# Crea el .exe (un solo archivo), lo prueba y sube Anotop.at.exe a las Releases,
+# con las novedades de CHANGELOG.md. De ahí descarga la app las actualizaciones.
+# Pasos para publicar: docs/PUBLICAR.md.
 name: Publicar versión
 
 on:
@@ -34,6 +35,11 @@ jobs:
               sys.exit(f"La etiqueta v{tag} no coincide con __version__ = {__version__} "
                        "(anotador/__init__.py). Cambia una de las dos.")
 
+      # La descripción de la Release (y lo que ve la gente en «Buscar actualizaciones»)
+      # es el apartado de esta versión en CHANGELOG.md. Si no existe, no se publica.
+      - name: Sacar las novedades de CHANGELOG.md
+        run: python tools/release_notes.py $env:GITHUB_REF_NAME > "$env:RUNNER_TEMP\notas.md"
+
       - name: Tests
         run: python -m pytest -q
 
@@ -48,11 +54,18 @@ jobs:
           $pdf = "$env:RUNNER_TEMP\prueba.pdf"
           $shot = "$env:RUNNER_TEMP\captura.png"
           python -c "import pymupdf, sys; d = pymupdf.open(); d.new_page().insert_text((50, 80), 'Hola'); d.save(sys.argv[1])" $pdf
-          $p = Start-Process dist\AnotadorPDF.exe -ArgumentList "`"$pdf`"", "--screenshot", "`"$shot`"" -PassThru -Wait
+          $p = Start-Process dist\Anotop.at.exe -ArgumentList "`"$pdf`"", "--screenshot", "`"$shot`"" -PassThru -Wait
           if ($p.ExitCode -ne 0 -or -not (Test-Path $shot)) { throw "El .exe no abrió el PDF (código $($p.ExitCode))" }
+
+      # Hasta la 1.1.0 la app se llamaba «Anotador PDF» y su actualizador busca
+      # AnotadorPDF.exe. Con esta copia, esas versiones también se actualizan.
+      - name: Copia con el nombre antiguo
+        run: Copy-Item dist\Anotop.at.exe dist\AnotadorPDF.exe
 
       - name: Publicar la release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/AnotadorPDF.exe
-          generate_release_notes: true  # lista de cambios a partir de los commits
+          files: |
+            dist/Anotop.at.exe
+            dist/AnotadorPDF.exe
+          body_path: ${{ runner.temp }}/notas.md

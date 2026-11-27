@@ -1,10 +1,12 @@
 """Actualizaciones: versiones, respuesta de GitHub y script de sustitución."""
 
+from pathlib import Path
+
 import pytest
 
 from anotador import __version__
-from anotador.core.updates import (ASSET_NAME, is_newer, looks_like_exe, parse_release,
-                                   parse_version, updater_script)
+from anotador.core.updates import (ASSET_NAME, LEGACY_ASSET_NAME, is_newer, looks_like_exe,
+                                   parse_release, parse_version, updater_script)
 
 
 def test_parse_version():
@@ -39,8 +41,10 @@ RELEASE = {
          "size": 10},
         {"name": "AnotadorPDF-1.0.0-windows.zip",  # formato antiguo (carpeta): se ignora
          "browser_download_url": "https://x/AnotadorPDF-1.0.0-windows.zip", "size": 9},
-        {"name": "AnotadorPDF.exe",
+        {"name": "AnotadorPDF.exe",  # copia para las versiones antiguas
          "browser_download_url": "https://x/AnotadorPDF.exe", "size": 5000},
+        {"name": "Anotop.at.exe",
+         "browser_download_url": "https://x/Anotop.at.exe", "size": 5000},
     ],
 }
 
@@ -48,10 +52,24 @@ RELEASE = {
 def test_parse_release_picks_windows_exe():
     release = parse_release(RELEASE)
     assert release.version == "1.2.0"
-    assert release.download_url == "https://x/AnotadorPDF.exe"
+    assert release.download_url == "https://x/Anotop.at.exe"
     assert release.size == 5000
     assert "Imprimir" in release.notes
-    assert ASSET_NAME == "AnotadorPDF.exe"  # tools/build_exe.py y release.yml usan este nombre
+    assert ASSET_NAME == "Anotop.at.exe"  # tools/build_exe.py y release.yml usan este nombre
+
+
+def test_release_with_only_the_old_name_still_works():
+    data = {"tag_name": "v1.1.0", "assets": [
+        {"name": LEGACY_ASSET_NAME, "browser_download_url": "https://x/viejo.exe", "size": 7}]}
+    assert parse_release(data).download_url == "https://x/viejo.exe"
+
+
+def test_release_publishes_the_old_name_for_old_versions():
+    # Las versiones hasta la 1.1.0 solo buscan AnotadorPDF.exe: release.yml debe subirlo.
+    workflow = (Path(__file__).parent.parent / ".github/workflows/release.yml").read_text(
+        encoding="utf-8")
+    assert LEGACY_ASSET_NAME == "AnotadorPDF.exe"
+    assert f"dist/{ASSET_NAME}" in workflow and f"dist/{LEGACY_ASSET_NAME}" in workflow
 
 
 def test_release_without_exe():

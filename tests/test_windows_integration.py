@@ -1,9 +1,10 @@
 """Registro en Windows para abrir PDFs con doble clic (con un registro simulado)."""
 
-from anotador.core.windows_integration import (APP_NAME, PROG_ID, is_registered, open_command,
-                                               register, registered_command, unregister)
+from anotador.core.windows_integration import (APP_NAME, LEGACY_APP_NAMES, PROG_ID, is_registered,
+                                               open_command, register, registered_command,
+                                               unregister)
 
-EXE = r"C:\Users\ana\AppData\Local\Programs\Anotador PDF\AnotadorPDF.exe"
+EXE = r"C:\Users\ana\AppData\Local\Programs\Anotop.at\Anotop.at.exe"
 
 
 class FakeRegistry:
@@ -37,7 +38,7 @@ def test_register_makes_app_known_to_windows():
     assert reg.get_value(rf"Software\Classes\{PROG_ID}\shell\open\command", "") == \
         open_command(EXE)
     assert reg.get_value(r"Software\Classes\.pdf\OpenWithProgids", PROG_ID) == ""
-    assert reg.get_value(r"Software\Classes\Applications\AnotadorPDF.exe",
+    assert reg.get_value(r"Software\Classes\Applications\Anotop.at.exe",
                          "FriendlyAppName") == APP_NAME
     capabilities = reg.get_value(r"Software\RegisteredApplications", APP_NAME)
     assert reg.get_value(capabilities + r"\FileAssociations", ".pdf") == PROG_ID
@@ -47,7 +48,7 @@ def test_register_makes_app_known_to_windows():
 def test_moved_folder_is_not_registered_anymore():
     reg = FakeRegistry()
     register(reg, EXE)
-    assert not is_registered(reg, r"D:\Otra carpeta\AnotadorPDF.exe")
+    assert not is_registered(reg, r"D:\Otra carpeta\Anotop.at.exe")
     assert registered_command(reg) == open_command(EXE)
 
 
@@ -72,3 +73,15 @@ def test_unregister_when_not_registered_does_nothing():
     reg = FakeRegistry({r"Software\Classes\.pdf": {"": "AcroExch.Document.DC"}})
     unregister(reg, EXE)
     assert reg.data == FakeRegistry({r"Software\Classes\.pdf": {"": "AcroExch.Document.DC"}}).data
+
+
+def test_app_name_is_the_new_one_and_old_registration_is_replaced():
+    assert APP_NAME == "Anotop.at"
+    # Así lo dejaba registrado la versión 1.1.0, cuando se llamaba «Anotador PDF».
+    reg = FakeRegistry({r"Software\RegisteredApplications":
+                        {"Anotador PDF": r"Software\AnotadorPDF\Capabilities"}})
+    register(reg, EXE)
+    names = reg.data[r"software\registeredapplications"]
+    assert APP_NAME in names and not any(old in names for old in LEGACY_APP_NAMES)
+    unregister(reg, EXE)
+    assert not reg.data[r"software\registeredapplications"]

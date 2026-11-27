@@ -16,7 +16,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton,
                                QTextBrowser, QVBoxLayout)
 
-from anotador import GITHUB_REPO, __version__
+from anotador import APP_NAME, GITHUB_REPO, __version__
 from anotador.core.updates import (ASSET_NAME, download, fetch_latest_release, is_newer,
                                    looks_like_exe, updater_script)
 
@@ -83,7 +83,7 @@ class UpdateDialog(QDialog):
         self._current = current
         self._release = None
 
-        title = QLabel(f"<b>Anotador PDF {current}</b>", self)
+        title = QLabel(f"<b>{APP_NAME} {current}</b>", self)
         self.status = QLabel(self)
         self.status.setWordWrap(True)
         self.notes = QTextBrowser(self)

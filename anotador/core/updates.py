@@ -1,6 +1,6 @@
 """Actualizaciones desde las «Releases» de GitHub.
 
-Cada versión publicada lleva el programa como un único archivo, ``AnotadorPDF.exe``.
+Cada versión publicada lleva el programa como un único archivo, ``Anotop.at.exe``.
 Actualizar es: descargarlo, cerrar la app y poner el nuevo en lugar del que se
 estaba usando.
 
@@ -17,8 +17,11 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-ASSET_NAME = "AnotadorPDF.exe"  # nombre del archivo en cada Release de GitHub
-USER_AGENT = "AnotadorPDF-actualizador"  # GitHub pide un User-Agent; no lleva datos personales
+ASSET_NAME = "Anotop.at.exe"  # nombre del archivo en cada Release de GitHub
+# Nombre que buscan las versiones hasta la 1.1.0 (cuando la app se llamaba Anotador
+# PDF). Cada Release lleva también una copia con este nombre (ver release.yml).
+LEGACY_ASSET_NAME = "AnotadorPDF.exe"
+USER_AGENT = "Anotop.at-actualizador"  # GitHub pide un User-Agent; no lleva datos personales
 TIMEOUT_S = 15
 
 
@@ -47,8 +50,8 @@ class Release:
 
 def parse_release(data: dict) -> Release:
     """Interpreta la respuesta de ``/repos/<repo>/releases/latest`` de la API de GitHub."""
-    asset = next((a for a in data.get("assets", [])
-                  if a.get("name", "").lower() == ASSET_NAME.lower()), None)
+    assets = {a.get("name", "").lower(): a for a in data.get("assets", [])}
+    asset = assets.get(ASSET_NAME.lower()) or assets.get(LEGACY_ASSET_NAME.lower())
     return Release(
         version=data["tag_name"].lstrip("vV"),
         notes=data.get("body") or "",
@@ -112,7 +115,7 @@ def updater_script(exe: str, new_exe: str, pids: list[int], relaunch: bool = Tru
     falla, lo devuelve a su sitio.
     """
     ids = ",".join(str(int(pid)) for pid in pids)
-    return f"""# Actualizador de Anotador PDF (generado automáticamente)
+    return f"""# Actualizador de Anotop.at (generado automáticamente)
 $ErrorActionPreference = 'Stop'
 $exe = {_ps(exe)}
 $new = {_ps(new_exe)}
@@ -138,8 +141,8 @@ try {{
         Move-Item -LiteralPath $old -Destination $exe
     }}
     $shell = New-Object -ComObject WScript.Shell
-    $null = $shell.Popup("No se pudo actualizar Anotador PDF: $($_.Exception.Message)" +
-        "`n`nSe ha mantenido la versión anterior.", 0, 'Anotador PDF', 48)
+    $null = $shell.Popup("No se pudo actualizar Anotop.at: $($_.Exception.Message)" +
+        "`n`nSe ha mantenido la versión anterior.", 0, 'Anotop.at', 48)
 }}
 
 # 5. Volver a abrir la app (Start-Process no admite rutas con corchetes, esto sí).

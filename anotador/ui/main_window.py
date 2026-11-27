@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QHBoxLayout,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QToolButton,
                                QVBoxLayout, QWidget)
 
-from anotador import GITHUB_REPO, __version__
+from anotador import APP_NAME, GITHUB_REPO, __version__
 from anotador.core.annotations import MarkupKind
 from anotador.core.document import DocumentError, PdfDocument
 from anotador.core.geometry import MAX_ZOOM, MIN_ZOOM
@@ -30,8 +30,10 @@ from .windows_dialog import DoubleClickDialog
 from . import theme
 from .widgets import Pill, SegmentedControl, TitleBlock, Toast
 
-APP_NAME = "Anotador PDF"
-SETTINGS_ORG = "AnotadorPDF"  # nombre para guardar las preferencias (registro de Windows)
+# Dónde se guardan las preferencias (registro de Windows). Son los nombres que tenía la
+# app antes de llamarse Anotop.at: no los cambies o se perderán las preferencias.
+SETTINGS_ORG = "AnotadorPDF"
+SETTINGS_APP = "Anotador PDF"
 # Si existe, las preferencias van a un archivo en esa carpeta en vez de al registro
 # (para llevar la app en un USB, o para probarla sin tocar las preferencias reales).
 SETTINGS_DIR_ENV = "ANOTADOR_SETTINGS_DIR"
@@ -134,7 +136,7 @@ class MainWindow(QMainWindow):
             return QSettings(str(Path(folder) / "AnotadorPDF.ini"), QSettings.IniFormat)
         # Formato por defecto (en Windows, el registro); las pruebas pueden cambiarlo.
         return QSettings(QSettings.defaultFormat(), QSettings.UserScope,
-                         SETTINGS_ORG, APP_NAME)
+                         SETTINGS_ORG, SETTINGS_APP)
 
     # ---- Construcción ------------------------------------------------------
 
@@ -236,7 +238,7 @@ class MainWindow(QMainWindow):
         self.act_markup.toggled.connect(self._set_markup_visible)
 
         self.act_double_click = QAction("Abrir PDFs con &doble clic…", self)
-        self.act_double_click.setToolTip("Registrar Anotador PDF en Windows para abrir los "
+        self.act_double_click.setToolTip("Registrar Anotop.at en Windows para abrir los "
                                          "PDF con doble clic")
         self.act_double_click.triggered.connect(self.show_double_click_dialog)
 

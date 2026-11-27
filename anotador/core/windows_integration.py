@@ -13,7 +13,13 @@ poder probarlas; ``WindowsRegistry`` es quien las escribe de verdad.
 from dataclasses import dataclass
 from typing import Protocol
 
-APP_NAME = "Anotador PDF"
+from anotador import APP_NAME
+
+# Nombres con los que se registraron versiones anteriores (antes de llamarse
+# Anotop.at). Se borran al registrar y al quitar el registro, para que no
+# aparezca dos veces en Aplicaciones predeterminadas.
+LEGACY_APP_NAMES = ("Anotador PDF",)
+# Identificadores internos: no cambian con el nombre de la app.
 PROG_ID = "AnotadorPDF.Document"
 CAPABILITIES_KEY = r"Software\AnotadorPDF\Capabilities"
 CLASSES = r"Software\Classes"
@@ -70,6 +76,8 @@ def association_values(exe_path: str) -> list[RegistryValue]:
 
 
 def register(registry: Registry, exe_path: str) -> None:
+    for name in LEGACY_APP_NAMES:
+        registry.delete_value(r"Software\RegisteredApplications", name)
     for item in association_values(exe_path):
         registry.set_value(item.key, item.name, item.value)
 
@@ -86,7 +94,8 @@ def unregister(registry: Registry, exe_path: str) -> None:
     registry.delete_tree(rf"{CLASSES}\Applications\{exe}")
     registry.delete_tree(CAPABILITIES_KEY)
     registry.delete_value(rf"{CLASSES}\.pdf\OpenWithProgids", PROG_ID)
-    registry.delete_value(r"Software\RegisteredApplications", APP_NAME)
+    for name in (APP_NAME, *LEGACY_APP_NAMES):
+        registry.delete_value(r"Software\RegisteredApplications", name)
 
 
 def registered_command(registry: Registry) -> str | None:

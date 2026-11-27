@@ -1,9 +1,9 @@
-"""Crea la versión .exe de Anotador PDF con PyInstaller.
+"""Crea la versión .exe de Anotop.at con PyInstaller.
 
 Uso (desde la carpeta del proyecto):
     .venv\\Scripts\\python.exe tools\\build_exe.py
 
-Resultado: dist\\AnotadorPDF.exe, un único archivo con todo dentro (no necesita
+Resultado: dist\\Anotop.at.exe, un único archivo con todo dentro (no necesita
 ninguna carpeta al lado). Es lo que se sube a las Releases de GitHub y lo que
 descarga la app al actualizarse.
 
@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
-EXE_NAME = "AnotadorPDF"
+EXE_NAME = "Anotop.at"  # sin «.exe»; debe coincidir con updates.ASSET_NAME
 
 sys.path.insert(0, str(ROOT))
 
@@ -83,7 +83,7 @@ def make_ico(path: Path) -> None:
 
 def make_version_file(path: Path) -> None:
     """Datos que Windows enseña en Propiedades > Detalles y en «Abrir con»."""
-    from anotador import __version__
+    from anotador import APP_NAME, __version__
 
     numbers = tuple(int(n) for n in __version__.split(".")) + (0,)
     path.write_text(f"""# Generado por tools/build_exe.py
@@ -92,8 +92,8 @@ VSVersionInfo(
                     OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
   kids=[
     StringFileInfo([StringTable('0C0A04B0', [
-      StringStruct('FileDescription', 'Anotador PDF'),
-      StringStruct('ProductName', 'Anotador PDF'),
+      StringStruct('FileDescription', '{APP_NAME}'),
+      StringStruct('ProductName', '{APP_NAME}'),
       StringStruct('FileVersion', '{__version__}'),
       StringStruct('ProductVersion', '{__version__}'),
       StringStruct('InternalName', '{EXE_NAME}'),
@@ -200,7 +200,7 @@ def main() -> int:
 
     PyInstaller.__main__.run([
         str(spec),
-        "--noconfirm",             # sobrescribe dist\AnotadorPDF.exe sin preguntar
+        "--noconfirm",             # sobrescribe dist\Anotop.at.exe sin preguntar
         "--clean",
         "--distpath", str(DIST),
         "--workpath", str(BUILD / "pyinstaller"),
