@@ -1,5 +1,7 @@
 """Actualizaciones: versiones, respuesta de GitHub y script de sustitución."""
 
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -122,3 +124,26 @@ def test_updater_script_clears_pyinstaller_variables_before_relaunch():
     clear = script.index("_PYI_*")
     assert script.index("$env:PYINSTALLER_RESET_ENVIRONMENT = '1'") > clear
     assert script.index("[System.Diagnostics.Process]::Start($exe)") > clear
+
+
+def test_updater_script_signals_that_it_started_before_waiting():
+    script = updater_script(r"C:\a.exe", r"C:\b.exe", pids=[1], started=r"C:\Temp\upd\iniciado")
+    mark = script.index(r"New-Item -ItemType File -Force -Path 'C:\Temp\upd\iniciado'")
+    assert mark < script.index("Wait-Process")  # antes de esperar a que se cierre la app
+    assert "New-Item" not in updater_script(r"C:\a.exe", r"C:\b.exe", pids=[1])
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="el actualizador es de Windows")
+def test_launch_updater_really_runs_the_script(tmp_path):
+    # Lanza PowerShell igual que al actualizar. Con DETACHED_PROCESS (hasta la 1.2.2)
+    # PowerShell se cerraba sin ejecutar nada y la app nunca se actualizaba.
+    from anotador.ui.update_dialog import launch_updater
+
+    done = tmp_path / "hecho.txt"
+    script = tmp_path / "prueba.ps1"
+    script.write_text(f"Set-Content -LiteralPath '{done}' -Value 'ok'", encoding="utf-8-sig")
+    launch_updater(script)
+    deadline = time.monotonic() + 30
+    while not done.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert done.exists(), "el script de actualización no llegó a ejecutarse"

@@ -105,7 +105,8 @@ def _ps(text: str) -> str:
     return "'" + str(text).replace("'", "''") + "'"
 
 
-def updater_script(exe: str, new_exe: str, pids: list[int], relaunch: bool = True) -> str:
+def updater_script(exe: str, new_exe: str, pids: list[int], relaunch: bool = True,
+                   started: str | None = None) -> str:
     """Script de PowerShell que sustituye el programa cuando la app se ha cerrado.
 
     ``exe`` es el .exe que se está usando (se respeta su nombre y su carpeta) y
@@ -113,14 +114,19 @@ def updater_script(exe: str, new_exe: str, pids: list[int], relaunch: bool = Tru
     un solo archivo son dos procesos, el que lo descomprime y la app en sí. Solo
     toca ese archivo: primero aparta el viejo (``.old``); si copiar el nuevo
     falla, lo devuelve a su sitio.
+
+    Lo primero que hace es crear el archivo ``started``: la app no se cierra hasta
+    verlo, para no cerrarse si el script no ha llegado a arrancar.
     """
     ids = ",".join(str(int(pid)) for pid in pids)
+    mark = (f"$null = New-Item -ItemType File -Force -Path {_ps(started)}\n"
+            if started else "")
     return f"""# Actualizador de Anotop.at (generado automáticamente)
 $ErrorActionPreference = 'Stop'
 $exe = {_ps(exe)}
 $new = {_ps(new_exe)}
 $old = "$exe.old"
-
+{mark}
 # 1. Esperar a que se cierre la app (como mucho, un minuto).
 try {{ Wait-Process -Id {ids} -Timeout 60 -ErrorAction SilentlyContinue }} catch {{ }}
 Start-Sleep -Milliseconds 500

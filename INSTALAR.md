@@ -119,6 +119,20 @@ antivirus.
 Repite el paso 4 (punto 2) y vuelve a intentarlo. Si acabas de registrarlo, a veces hay
 que cerrar y volver a abrir el Explorador.
 
+**Pulso «Descargar e instalar», el programa se cierra, pero al abrirlo sigue en la versión
+anterior y vuelve a ofrecer la actualización.**
+Es un fallo de las versiones 1.2.2 y anteriores, corregido a partir de la 1.2.3. Para
+salir de él, actualiza a mano una vez:
+
+1. Entra en la [página de descargas](https://github.com/bamdab7/anotop.at/releases/latest)
+   y descarga el archivo **con el mismo nombre que el tuyo**: `Anotop.at.exe` o, si el tuyo
+   se llama `AnotadorPDF.exe`, ese.
+2. Cierra el programa.
+3. Pon el archivo descargado en la carpeta donde tenías el antiguo, sustituyéndolo.
+
+Así se conservan tus preferencias, tus archivos recientes y el doble clic en los PDF. Las
+siguientes actualizaciones ya se instalarán solas.
+
 **Después de actualizar, el programa no se vuelve a abrir solo.**
 La actualización sí se ha instalado: ábrelo tú con doble clic y ya tendrás la versión
 nueva. Pasa al actualizar desde las versiones 1.1.0 y 1.2.0, por un fallo que está

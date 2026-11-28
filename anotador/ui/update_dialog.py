@@ -9,9 +9,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton,
                                QTextBrowser, QVBoxLayout)
@@ -21,6 +22,10 @@ from anotador.core.updates import (ASSET_NAME, download, fetch_latest_release, i
                                    looks_like_exe, updater_environment, updater_script)
 
 from .windows_dialog import running_exe
+
+# Lo que se espera a que el script de actualización dé señales de vida antes de cerrar
+# la app. PowerShell suele tardar uno o dos segundos en arrancar; con el antivirus, más.
+UPDATER_START_TIMEOUT_S = 30
 
 
 class _Bridge(QObject):
@@ -41,8 +46,14 @@ def _in_background(work, bridge: _Bridge) -> None:
 
 
 def launch_updater(script: Path) -> None:
-    """Ejecuta el script de actualización en segundo plano, independiente de la app."""
-    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    """Ejecuta el script de actualización en segundo plano, independiente de la app.
+
+    IMPORTANTE: con ``DETACHED_PROCESS`` (lo que se usaba hasta la 1.2.2) PowerShell
+    se cierra nada más abrirse sin ejecutar el script, y la app no se actualizaba.
+    ``CREATE_NO_WINDOW`` también lo oculta y sí funciona; el script sigue vivo
+    aunque la app se cierre. Lo comprueba ``test_launch_updater_really_runs_the_script``.
+    """
+    flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
     subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
                       "-WindowStyle", "Hidden", "-File", str(script)],
                      creationflags=flags, close_fds=True,
@@ -193,14 +204,40 @@ class UpdateDialog(QDialog):
                                 "</small>")
             return
         script = new.parent / "actualizar.ps1"
+        started = new.parent / "iniciado"
         # Con BOM: si no, PowerShell 5 lee mal las tildes de las rutas («Año», «Peña»…).
-        script.write_text(updater_script(str(self._exe), str(new), app_pids()),
+        script.write_text(updater_script(str(self._exe), str(new), app_pids(),
+                                         started=str(started)),
                           encoding="utf-8-sig")
-        self._launch(script)
-        self.status.setText("Instalando… la app se cerrará y se volverá a abrir.")
-        if self._quit_app is not None:
-            self._quit_app()
-        self.accept()
+        try:
+            self._launch(script)
+        except OSError as exc:
+            self._updater_failed(str(exc))
+            return
+        self.progress.setMaximum(0)  # barra animada mientras arranca
+        self.status.setText("Preparando la instalación…")
+        self._wait_for_updater(started, time.monotonic() + UPDATER_START_TIMEOUT_S)
+
+    def _wait_for_updater(self, started: Path, deadline: float) -> None:
+        """Cierra la app solo cuando el script de actualización ya está en marcha."""
+        if started.exists():
+            self.status.setText("Instalando… la app se cerrará y se volverá a abrir.")
+            if self._quit_app is not None:
+                self._quit_app()
+            self.accept()
+        elif time.monotonic() > deadline:
+            self._updater_failed("el instalador no llegó a arrancar")
+        else:
+            QTimer.singleShot(200, lambda: self._wait_for_updater(started, deadline))
+
+    def _updater_failed(self, reason: str) -> None:
+        self.progress.hide()
+        self.page_button.show()
+        self.status.setText(
+            "No se pudo instalar la actualización automáticamente "
+            f"<small>({reason})</small>. Puedes instalarla a mano: pulsa «Ver en GitHub», "
+            "descarga <b>Anotop.at.exe</b>, cierra la app y pon el archivo descargado en "
+            "lugar del que usas ahora.")
 
     def _open_page(self) -> None:
         if self._release and self._release.page_url:

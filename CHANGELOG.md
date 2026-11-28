@@ -5,6 +5,14 @@ versión en GitHub y lo que se muestra en la app en **Buscar actualizaciones**.
 
 ## Sin publicar
 
+- **Corregido:** al pulsar «Descargar e instalar», el programa se cerraba pero la
+  actualización no llegaba a instalarse, y al abrirlo volvía a ofrecerla. Ahora se instala
+  y el programa se vuelve a abrir solo. Si algo impidiera instalarla, el programa ya no se
+  cierra: avisa y explica cómo hacerlo a mano.
+- **Si tienes la versión 1.2.2 o una anterior**, esta vez tienes que actualizar a mano:
+  descarga `Anotop.at.exe` desde esta página, cierra el programa y pon el archivo nuevo en
+  lugar del antiguo. Las siguientes actualizaciones ya se instalarán solas.
+
 ## 1.2.2
 
 - **Nuevo:** las flechas ← y → del teclado pasan a la página anterior o siguiente. Si
