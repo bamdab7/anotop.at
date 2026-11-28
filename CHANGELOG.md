@@ -5,6 +5,8 @@ versión en GitHub y lo que se muestra en la app en **Buscar actualizaciones**.
 
 ## Sin publicar
 
+## 1.2.3
+
 - **Corregido:** al pulsar «Descargar e instalar», el programa se cerraba pero la
   actualización no llegaba a instalarse, y al abrirlo volvía a ofrecerla. Ahora se instala
   y el programa se vuelve a abrir solo. Si algo impidiera instalarla, el programa ya no se
