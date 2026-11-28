@@ -5,6 +5,8 @@ versión en GitHub y lo que se muestra en la app en **Buscar actualizaciones**.
 
 ## Sin publicar
 
+## 1.2.2
+
 - **Nuevo:** las flechas ← y → del teclado pasan a la página anterior o siguiente. Si
   has acercado tanto que la página no cabe a lo ancho, siguen moviendo la vista a los lados.
 - **Nuevo:** «Ajustar a la página» (Ctrl+1), para ver cada página entera en la ventana. Está
