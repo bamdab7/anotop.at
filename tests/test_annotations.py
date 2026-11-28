@@ -6,6 +6,7 @@ from anotador.core.document import PdfDocument
 
 YELLOW = MARKUP_COLORS[0][1]
 GREEN = MARKUP_COLORS[1][1]
+BLUE = MARKUP_COLORS[2][1]
 
 
 @pytest.fixture
@@ -160,6 +161,74 @@ def test_markup_on_rotated_page_covers_the_text(text_pdf):
         page = raw[0]
         [annot] = list(page.annots())
         assert "Segunda" in page.get_textbox(annot.rect)
+
+
+# ---- Volver a marcar el mismo texto ------------------------------------------
+
+def select(doc, first, last):
+    return doc.select_text(0, word_center(doc, first), word_center(doc, last))
+
+
+def markups(doc):
+    return sorted((a.kind, a.text) for a in doc.annotations(0))
+
+
+@pytest.mark.parametrize("kind", list(MarkupKind))
+def test_marking_twice_does_not_stack(text_pdf, kind):
+    doc = PdfDocument(text_pdf())
+    for _ in range(3):
+        doc.add_text_markup(select(doc, "Primera", "texto"), kind, YELLOW)
+    assert markups(doc) == [(kind.value, "Primera línea de texto")]
+    doc.close()
+
+
+def test_new_highlight_color_replaces_the_old_one(text_pdf):
+    doc = PdfDocument(text_pdf())
+    doc.add_text_markup(select(doc, "Primera", "texto"), MarkupKind.HIGHLIGHT, BLUE)
+    doc.add_text_markup(select(doc, "Primera", "texto"), MarkupKind.HIGHLIGHT, YELLOW)
+    [info] = doc.annotations(0)
+    assert_color(info.color, YELLOW)
+    doc.close()
+
+
+def test_marking_one_word_splits_the_old_mark(text_pdf):
+    doc = PdfDocument(text_pdf())
+    doc.add_text_markup(select(doc, "Primera", "aquí"), MarkupKind.HIGHLIGHT, BLUE)
+    doc.add_text_markup(select(doc, "línea de", "línea de"), MarkupKind.HIGHLIGHT, YELLOW)
+    by_color = {tuple(round(c, 2) for c in a.color): a.text for a in doc.annotations(0)}
+    assert by_color == {
+        tuple(round(c, 2) for c in BLUE): "Primera de texto Segunda línea aquí",
+        tuple(round(c, 2) for c in YELLOW): "línea",
+    }
+    doc.close()
+
+
+def test_different_kinds_can_be_combined(text_pdf):
+    doc = PdfDocument(text_pdf())
+    doc.add_text_markup(select(doc, "Primera", "texto"), MarkupKind.HIGHLIGHT, YELLOW)
+    doc.add_text_markup(select(doc, "Primera", "texto"), MarkupKind.UNDERLINE, GREEN)
+    assert [k for k, _ in markups(doc)] == ["Highlight", "Underline"]
+    doc.close()
+
+
+def test_remarking_keeps_the_comment(text_pdf):
+    doc = PdfDocument(text_pdf())
+    doc.add_text_markup(select(doc, "Primera", "texto"), MarkupKind.HIGHLIGHT, BLUE)
+    [old] = doc.annotations(0)
+    doc.set_annotation_text(0, old.xref, "importante")
+    doc.add_text_markup(select(doc, "Primera", "texto"), MarkupKind.HIGHLIGHT, YELLOW)
+    assert markups(doc) == [("Highlight", "importante")]
+    doc.close()
+
+
+def test_remarking_on_rotated_page_and_undo(text_pdf):
+    doc = PdfDocument(text_pdf(rotation=90))
+    doc.add_text_markup(select(doc, "Primera", "texto"), MarkupKind.HIGHLIGHT, BLUE)
+    doc.add_text_markup(select(doc, "texto", "texto"), MarkupKind.HIGHLIGHT, YELLOW)
+    assert markups(doc) == [("Highlight", "Primera línea de"), ("Highlight", "texto")]
+    doc.undo()  # deshacer devuelve el resaltado azul entero
+    assert markups(doc) == [("Highlight", "Primera línea de texto")]
+    doc.close()
 
 
 def test_existing_annotations_are_listed(text_pdf):

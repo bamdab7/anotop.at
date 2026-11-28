@@ -34,6 +34,7 @@ GLYPHS = {
     "zoom_in": "\ue8a3",
     "zoom_out": "\ue71f",
     "fit_width": "\ue799",
+    "fit_page": "\ue9a6",
     "find": "\ue721",
     "night": "\ue708",
     "copy": "\ue8c8",

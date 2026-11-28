@@ -64,6 +64,41 @@ def _distance(point: pymupdf.Point, rect: pymupdf.Rect) -> float:
     return (dx * dx + dy * dy) ** 0.5
 
 
+_MARKUP_TYPES = {MarkupKind.HIGHLIGHT: pymupdf.PDF_ANNOT_HIGHLIGHT,
+                 MarkupKind.UNDERLINE: pymupdf.PDF_ANNOT_UNDERLINE,
+                 MarkupKind.STRIKEOUT: pymupdf.PDF_ANNOT_STRIKE_OUT}
+
+
+def _words_inside(words: list, rects: list[pymupdf.Rect]) -> set[int]:
+    """Índices de las palabras cuyo centro cae dentro de alguno de ``rects``."""
+    inside = set()
+    for i, w in enumerate(words):
+        center = pymupdf.Point((w[0] + w[2]) / 2, (w[1] + w[3]) / 2)
+        if any(center in r for r in rects):
+            inside.add(i)
+    return inside
+
+
+def _word_lines(words: list, indices) -> list[tuple[pymupdf.Rect, list[str]]]:
+    """Une las palabras ``indices`` (en orden) en una caja por línea de texto.
+
+    Si entre dos palabras de la misma línea falta alguna, se empieza otra caja
+    para no cubrir el hueco.
+    """
+    lines: list[tuple[pymupdf.Rect, list[str]]] = []
+    previous = None
+    for i in indices:
+        key = (words[i][5], words[i][6])
+        rect = pymupdf.Rect(words[i][:4])
+        if previous is not None and previous == (key, i - 1):
+            lines[-1][0].include_rect(rect)
+            lines[-1][1].append(words[i][4])
+        else:
+            lines.append((rect, [words[i][4]]))
+        previous = (key, i)
+    return lines
+
+
 @dataclass(frozen=True)
 class _InkStrokes:
     """Una anotación Ink de una página: sus trazos en coordenadas de la página sin rotar."""
@@ -216,20 +251,11 @@ class PdfDocument:
         if first > last:
             first, last = last, first
 
-        # Una caja por línea de texto, uniendo las palabras de esa línea.
-        lines: list[tuple[tuple, pymupdf.Rect, list[str]]] = []
-        for i in range(first, last + 1):
-            key = (words[i][5], words[i][6])
-            if lines and lines[-1][0] == key:
-                lines[-1][1].include_rect(rects[i])
-                lines[-1][2].append(words[i][4])
-            else:
-                lines.append((key, pymupdf.Rect(rects[i]), [words[i][4]]))
-
+        lines = _word_lines(words, range(first, last + 1))
         rotate = page.rotation_matrix
-        pdf_rects = tuple(tuple(r) for _, r, _ in lines)
-        visible = tuple(tuple(r * rotate) for _, r, _ in lines)
-        text = "\n".join(" ".join(parts) for _, _, parts in lines)
+        pdf_rects = tuple(tuple(r) for r, _ in lines)
+        visible = tuple(tuple(r * rotate) for r, _ in lines)
+        text = "\n".join(" ".join(parts) for _, parts in lines)
         return TextSelection(index, visible, pdf_rects, text)
 
     # ---- Anotaciones -------------------------------------------------------
@@ -244,10 +270,57 @@ class PdfDocument:
                 MarkupKind.UNDERLINE: page.add_underline_annot,
                 MarkupKind.STRIKEOUT: page.add_strikeout_annot,
             }[kind]
+            comments = self._clear_markup(page, kind, selection.pdf_rects)
             annot = add(quads)
             annot.set_colors(stroke=color)
+            if comments:
+                annot.set_info(content="\n".join(comments))
             annot.update()
             self._changed(selection.page)
+
+    def _clear_markup(self, page, kind: MarkupKind, rects) -> list[str]:
+        """Quita las marcas de tipo ``kind`` de las palabras dentro de ``rects``.
+
+        Así, volver a marcar una palabra sustituye la marca anterior en vez de
+        apilar otra encima (y los colores de los resaltados no se mezclan). Una
+        marca que cubría más palabras se recorta y conserva el resto; la que
+        queda vacía se borra. Devuelve los comentarios de las marcas borradas,
+        para no perderlos.
+        """
+        words = self._page_words(page.number)
+        boxes = [pymupdf.Rect(r) for r in rects]
+        target = _words_inside(words, boxes)
+        comments = []
+        if not target:
+            return comments
+        for annot in list(page.annots(types=[_MARKUP_TYPES[kind]])):
+            vertices = annot.vertices or []
+            quads = [pymupdf.Quad(vertices[i:i + 4]).rect for i in range(0, len(vertices) - 3, 4)]
+            covered = _words_inside(words, quads)
+            if not covered & target:
+                continue
+            remaining = sorted(covered - target)
+            if remaining:
+                lines = _word_lines(words, remaining)
+                self._set_quads(page, annot, [r for r, _ in lines])
+            else:
+                text = annot.info.get("content", "").strip()
+                if text:
+                    comments.append(text)
+                page.delete_annot(annot)
+        return comments
+
+    def _set_quads(self, page, annot, rects: list[pymupdf.Rect]) -> None:
+        """Cambia las zonas que cubre una marca de texto, conservando color, autor, comentario…"""
+        to_pdf = ~page.transformation_matrix  # de coordenadas PyMuPDF a las del archivo PDF
+        numbers = []
+        for rect in rects:
+            q = rect.quad
+            for point in (q.ul, q.ur, q.ll, q.lr):
+                p = point * to_pdf
+                numbers += [f"{p.x:.3f}", f"{p.y:.3f}"]
+        self._doc.xref_set_key(annot.xref, "QuadPoints", "[" + " ".join(numbers) + "]")
+        page.load_annot(annot.xref).update()  # regenera el aspecto y recalcula el recuadro
 
     def add_note(self, index: int, point: tuple[float, float], text: str,
                  color: Color) -> int:

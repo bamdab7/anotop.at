@@ -25,7 +25,8 @@ se modifica nunca.
 
 ## Funciones
 
-- **Lectura:** scroll continuo, zoom, miniaturas, índice del documento, búsqueda con
+- **Lectura:** scroll continuo, zoom (también ajustado al ancho o a la página entera,
+  útil para diapositivas), miniaturas, índice del documento, búsqueda con
   contador de resultados («3 de 12») y modo noche, que oscurece la página sin alterar los
   colores de los resaltados. El modo noche solo cambia cómo se ve el documento en la app:
   el archivo PDF no se modifica y se sigue viendo con sus colores originales en otros
@@ -52,8 +53,9 @@ Las novedades de cada versión están en **[CHANGELOG.md](CHANGELOG.md)**.
 | Abrir · Guardar · Guardar como | Ctrl+O · Ctrl+S · Ctrl+Mayús+S |
 | Deshacer · Rehacer | Ctrl+Z · Ctrl+Y |
 | Buscar | Ctrl+F (F3 / Mayús+F3 para el siguiente o el anterior) |
-| Acercar · Alejar · Tamaño real · Ajustar al ancho | Ctrl++ · Ctrl+− · Ctrl+0 · Ctrl+2 |
-| Página anterior · siguiente | Ctrl+RePág · Ctrl+AvPág |
+| Acercar · Alejar · Tamaño real | Ctrl++ · Ctrl+− · Ctrl+0 |
+| Ajustar a la página · Ajustar al ancho | Ctrl+1 · Ctrl+2 |
+| Página anterior · siguiente | ← · → (también Ctrl+RePág · Ctrl+AvPág) |
 | Mostrar u ocultar las herramientas de marcación | Ctrl+Mayús+A |
 | Panel lateral | F9 |
 | Modo noche | Ctrl+I |

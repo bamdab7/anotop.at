@@ -33,6 +33,35 @@ def test_fit_width():
     assert g.zoom_to_fit_width(0, 400) == 1.0
 
 
+@pytest.mark.parametrize("width, height", [(960, 540), (595, 842)])  # diapositiva y A4
+def test_fit_page_shows_the_whole_page(width, height):
+    zoom = g.zoom_to_fit_page(width, height, 1200, 700)
+    assert g.points_to_pixels(width, zoom) <= 1200 + 1e-6
+    assert g.points_to_pixels(height, zoom) <= 700 + 1e-6
+    # Y aprovecha el espacio: uno de los dos lados llega justo al borde.
+    assert max(g.points_to_pixels(width, zoom) / 1200,
+               g.points_to_pixels(height, zoom) / 700) == pytest.approx(1)
+    assert g.zoom_to_fit_page(0, 100, 1200, 700) == 1.0
+
+
+A4 = (595, 842)
+SLIDE = (960, 540)
+
+
+def test_slides_are_landscape():
+    assert g.is_landscape([SLIDE] * 10)
+    assert not g.is_landscape([A4] * 10)
+    assert g.is_landscape([A4] + [SLIDE] * 9)  # una portada vertical no lo cambia
+    assert not g.is_landscape([A4] * 6 + [SLIDE] * 4)
+    assert not g.is_landscape([])
+
+
+def test_thumbnail_takes_the_shape_of_the_pages():
+    assert g.thumbnail_size([A4], 120, 160) == (113, 160)  # vertical: manda el alto
+    assert g.thumbnail_size([SLIDE], 120, 160) == (120, 68)  # apaisada: manda el ancho
+    assert g.thumbnail_size([], 120, 160) == (120, 160)
+
+
 def test_zoom_to_fit_keeps_whole_page_inside_box():
     # Página vertical: manda el alto.
     zoom = g.zoom_to_fit(300, 600, 200, 200)

@@ -5,6 +5,17 @@ versión en GitHub y lo que se muestra en la app en **Buscar actualizaciones**.
 
 ## Sin publicar
 
+- **Nuevo:** las flechas ← y → del teclado pasan a la página anterior o siguiente. Si
+  has acercado tanto que la página no cabe a lo ancho, siguen moviendo la vista a los lados.
+- **Nuevo:** «Ajustar a la página» (Ctrl+1), para ver cada página entera en la ventana. Está
+  en el menú Ver, en la lista del zoom y como botón junto a «Ajustar al ancho». Las
+  presentaciones y diapositivas se abren así directamente; se puede cambiar cuando se quiera.
+- **Mejorado:** las miniaturas de las diapositivas y de otras páginas apaisadas ya no dejan
+  grandes huecos en blanco en el panel lateral: cada miniatura tiene la forma de su página.
+- **Corregido:** volver a resaltar, subrayar o tachar una palabra ya no acumula marcas
+  una encima de otra. La marca nueva sustituye a la anterior del mismo tipo, así que un
+  resaltado nuevo cambia el color en vez de mezclarse, y basta con borrar una vez.
+
 ## 1.2.1
 
 - **Corregido:** después de actualizar, el programa no se volvía a abrir solo (aunque la

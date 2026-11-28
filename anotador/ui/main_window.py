@@ -12,14 +12,14 @@ from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QHBoxLayout,
 from anotador import APP_NAME, GITHUB_REPO, __version__
 from anotador.core.annotations import MarkupKind
 from anotador.core.document import DocumentError, PdfDocument
-from anotador.core.geometry import MAX_ZOOM, MIN_ZOOM
+from anotador.core.geometry import MAX_ZOOM, MIN_ZOOM, is_landscape
 from anotador.core.recent import add_recent, recent_labels, remove_recent
 from anotador.core.toolbar_layout import (AnnotationBarPosition, annotation_position,
                                           hidden_items)
 
 from .annotate_toolbar import AnnotateToolBar
 from .icons import icon
-from .page_view import PageView
+from .page_view import FitMode, PageView
 from .selection_bar import SelectionBar
 from .text_dialog import TextDialog
 from .search_bar import SearchBar
@@ -39,6 +39,7 @@ SETTINGS_APP = "Anotador PDF"
 SETTINGS_DIR_ENV = "ANOTADOR_SETTINGS_DIR"
 ZOOM_PRESETS = [50, 75, 100, 125, 150, 200, 300, 400]  # en %
 FIT_WIDTH_TEXT = "Ajustar al ancho"
+FIT_PAGE_TEXT = "Ajustar a la página"
 
 
 class MainWindow(QMainWindow):
@@ -46,6 +47,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._doc: PdfDocument | None = None
         self._last_dir = str(Path.home())
+        # Ajuste que había antes de que la app pusiera «Ajustar a la página» por su cuenta
+        # (al abrir diapositivas): (modo, zoom), o None si el ajuste lo eligió el usuario.
+        self._fit_before_auto: tuple[FitMode, float] | None = None
+        self._auto_fitting = False
         self._closing_for_update = False  # al actualizar ya se preguntó por los cambios
 
         self.view = PageView(self)
@@ -95,7 +100,7 @@ class MainWindow(QMainWindow):
 
         self.view.currentPageChanged.connect(self._on_page_changed)
         self.view.zoomChanged.connect(self._on_zoom_changed)
-        self.view.fitWidthChanged.connect(self.act_fit_width.setChecked)
+        self.view.fitModeChanged.connect(self._on_fit_mode_changed)
         self.view.currentPageChanged.connect(self.side_panel.set_current_page)
         self.side_panel.pageRequested.connect(self._on_page_requested)
         self.search_bar.resultsChanged.connect(self.view.set_search_results)
@@ -198,7 +203,15 @@ class MainWindow(QMainWindow):
         self.act_fit_width.setCheckable(True)
         self.act_fit_width.setShortcut(QKeySequence("Ctrl+2"))
         self.act_fit_width.setToolTip("Ajustar al ancho (Ctrl+2)")
-        self.act_fit_width.toggled.connect(self.view.set_fit_width)
+        self.act_fit_width.toggled.connect(
+            lambda on: self._set_fit_mode(FitMode.WIDTH, on))
+
+        self.act_fit_page = QAction(FIT_PAGE_TEXT, self)
+        self.act_fit_page.setCheckable(True)
+        self.act_fit_page.setShortcut(QKeySequence("Ctrl+1"))
+        self.act_fit_page.setToolTip("Ver la página entera (Ctrl+1)")
+        self.act_fit_page.toggled.connect(
+            lambda on: self._set_fit_mode(FitMode.PAGE, on))
 
         self.act_side_panel = self.side_dock.toggleViewAction()
         self.act_side_panel.setText("Panel lateral")
@@ -262,6 +275,7 @@ class MainWindow(QMainWindow):
                              (self.act_previous_page, "previous"),
                              (self.act_next_page, "next"), (self.act_zoom_in, "zoom_in"),
                              (self.act_zoom_out, "zoom_out"), (self.act_fit_width, "fit_width"),
+                             (self.act_fit_page, "fit_page"),
                              (self.act_find, "find"), (self.act_night, "night"),
                              (self.act_copy, "copy"), (self.act_customize, "settings"),
                              (self.act_markup, "markup")):
@@ -302,6 +316,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.act_zoom_out)
         view_menu.addAction(self.act_actual_size)
         view_menu.addAction(self.act_fit_width)
+        view_menu.addAction(self.act_fit_page)
         view_menu.addSeparator()
         view_menu.addAction(self.act_night)
         view_menu.addSeparator()
@@ -357,17 +372,20 @@ class MainWindow(QMainWindow):
         self.zoom_box.setInsertPolicy(QComboBox.NoInsert)
         self.zoom_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.zoom_box.setMinimumContentsLength(5)  # «100 %»; la lista se abre más ancha
-        self.zoom_box.view().setMinimumWidth(
-            self.zoom_box.fontMetrics().horizontalAdvance(FIT_WIDTH_TEXT) + 40)
+        self.zoom_box.view().setMinimumWidth(40 + max(
+            self.zoom_box.fontMetrics().horizontalAdvance(text)
+            for text in (FIT_WIDTH_TEXT, FIT_PAGE_TEXT)))
         self.zoom_box.setToolTip("Zoom: elige un valor o escribe un porcentaje")
-        self.zoom_box.addItem(FIT_WIDTH_TEXT)
+        self.zoom_box.addItem(FIT_WIDTH_TEXT, FitMode.WIDTH)
+        self.zoom_box.addItem(FIT_PAGE_TEXT, FitMode.PAGE)
         for percent in ZOOM_PRESETS:
             self.zoom_box.addItem(f"{percent} %", percent)
         self.zoom_box.activated.connect(self._on_zoom_chosen)
         self.zoom_box.lineEdit().returnPressed.connect(self._on_zoom_typed)
         zoom = Pill(self.act_zoom_out, self.zoom_box, self.act_zoom_in, parent=self)
         bar.add_item("zoom", "Zoom (alejar, porcentaje, acercar)", zoom, text=False)
-        bar.add_item("fit_width", "Ajustar al ancho", self.act_fit_width, text=False)
+        bar.add_item("fit_width", FIT_WIDTH_TEXT, self.act_fit_width, text=False)
+        bar.add_item("fit_page", FIT_PAGE_TEXT, self.act_fit_page, text=False)
 
         bar.new_section()
         bar.add_item("open", "Abrir", self.act_open)
@@ -402,8 +420,8 @@ class MainWindow(QMainWindow):
             self.act_open, self.act_save, self.act_save_as, self.act_quit, self.act_undo,
             self.act_redo, self.act_find, self.act_find_next, self.act_find_previous,
             self.act_side_panel, self.act_zoom_in, self.act_zoom_out, self.act_actual_size,
-            self.act_fit_width, self.act_night, self.act_previous_page, self.act_next_page,
-            self.act_menu_bar, self.act_markup, *self.annotate_bar.all_actions()])
+            self.act_fit_width, self.act_fit_page, self.act_night, self.act_previous_page,
+            self.act_next_page, self.act_menu_bar, self.act_markup, *self.annotate_bar.all_actions()])
 
     # ---- Personalizar las barras -------------------------------------------
 
@@ -551,10 +569,33 @@ class MainWindow(QMainWindow):
         self._last_dir = str(doc.path.parent)
         self._remember_recent(doc.path)
         self.view.set_document(doc)
+        self._auto_fit(doc)
         self.side_panel.set_document(doc)
         self.search_bar.set_document(doc)
         self._update_ui()
         return True
+
+    def _auto_fit(self, doc: PdfDocument) -> None:
+        """Las diapositivas (páginas apaisadas) se abren con «Ajustar a la página».
+
+        Si luego se abre un documento normal y el usuario no ha tocado el ajuste,
+        se vuelve al que tenía antes.
+        """
+        self._auto_fitting = True
+        try:
+            if is_landscape(doc.page_sizes):
+                if self.view.fit_mode != FitMode.PAGE:
+                    self._fit_before_auto = (self.view.fit_mode, self.view.zoom)
+                    self.view.set_fit_mode(FitMode.PAGE)
+            elif self._fit_before_auto is not None:
+                mode, zoom = self._fit_before_auto
+                self._fit_before_auto = None
+                if mode == FitMode.NONE:
+                    self.view.set_zoom(zoom)
+                else:
+                    self.view.set_fit_mode(mode)
+        finally:
+            self._auto_fitting = False
 
     # ---- Archivos recientes ------------------------------------------------
 
@@ -641,7 +682,8 @@ class MainWindow(QMainWindow):
     def _update_ui(self) -> None:
         has_doc = self._doc is not None
         for item in (self.act_zoom_in, self.act_zoom_out, self.act_actual_size,
-                     self.act_fit_width, self.page_edit, self.zoom_box, self.act_find,
+                     self.act_fit_width, self.act_fit_page, self.page_edit, self.zoom_box,
+                     self.act_find,
                      self.act_find_next, self.act_find_previous, self.act_save_as,
                      self.annotate_bar):
             item.setEnabled(has_doc)
@@ -681,13 +723,27 @@ class MainWindow(QMainWindow):
         self.zoom_box.setEditText(f"{round(zoom * 100)} %")
 
     def _on_zoom_chosen(self, index: int) -> None:
-        percent = self.zoom_box.itemData(index)
-        if percent is None:
-            self.act_fit_width.setChecked(True)
+        data = self.zoom_box.itemData(index)
+        if isinstance(data, FitMode):
+            self.view.set_fit_mode(data)
         else:
-            self.view.set_zoom(percent / 100)
+            self.view.set_zoom(data / 100)
         self._on_zoom_changed(self.view.zoom)  # el texto, siempre como porcentaje
         self.view.setFocus()
+
+    def _set_fit_mode(self, mode: FitMode, enabled: bool) -> None:
+        """Al marcar «Ajustar…» se activa ese modo; al desmarcarlo, el zoom se queda fijo."""
+        if enabled:
+            if self.view.fit_mode != mode:
+                self.view.set_fit_mode(mode)
+        elif self.view.fit_mode == mode:
+            self.view.set_fit_mode(FitMode.NONE)
+
+    def _on_fit_mode_changed(self, mode: FitMode) -> None:
+        if not self._auto_fitting:
+            self._fit_before_auto = None  # el usuario ha elegido: se respeta su ajuste
+        self.act_fit_width.setChecked(mode == FitMode.WIDTH)
+        self.act_fit_page.setChecked(mode == FitMode.PAGE)
 
     def _on_zoom_typed(self) -> None:
         digits = "".join(c for c in self.zoom_box.currentText() if c.isdigit())

@@ -18,7 +18,7 @@ from anotador.core.annotations import (MARKUP_COLORS, PEN_WIDTHS, AnnotationInfo
                                        TextSelection)
 from anotador.core.document import PdfDocument
 from anotador.core.geometry import (clamp_zoom, pixels_to_points, points_to_pixels, zoom_in,
-                                    zoom_out, zoom_to_fit_width)
+                                    zoom_out, zoom_to_fit_page, zoom_to_fit_width)
 from anotador.core.layout import MARGIN_PX, DocumentPoint, PageLayout
 from anotador.core.night import NIGHT_DARK, night_color
 
@@ -99,6 +99,14 @@ def _eraser_cursor() -> QCursor:
     return QCursor(pixmap, size // 2, size // 2)
 
 
+class FitMode(Enum):
+    """Zoom que se recalcula solo al cambiar el tamaño de la ventana."""
+
+    NONE = "none"    # zoom fijo, elegido por el usuario
+    WIDTH = "width"  # la página ocupa todo el ancho
+    PAGE = "page"    # la página se ve entera (ancho y alto)
+
+
 class _CachedPage:
     __slots__ = ("zoom", "dpr", "image")
 
@@ -109,7 +117,7 @@ class _CachedPage:
 class PageView(QAbstractScrollArea):
     currentPageChanged = Signal(int)
     zoomChanged = Signal(float)
-    fitWidthChanged = Signal(bool)
+    fitModeChanged = Signal(object)  # FitMode
     selectionChanged = Signal(bool)  # True si hay texto seleccionado
     toolChanged = Signal(object)  # Tool
     annotationSelected = Signal(object)  # AnnotationInfo o None
@@ -129,7 +137,7 @@ class PageView(QAbstractScrollArea):
         super().__init__(parent)
         self._doc: PdfDocument | None = None
         self._zoom = 1.0
-        self._fit_width = False
+        self._fit = FitMode.NONE
         self._layout = PageLayout([], self._zoom)
         self._cache: OrderedDict[int, _CachedPage] = OrderedDict()
         self._current_page = -1
@@ -181,8 +189,8 @@ class PageView(QAbstractScrollArea):
         return self._current_page
 
     @property
-    def fit_width(self) -> bool:
-        return self._fit_width
+    def fit_mode(self) -> FitMode:
+        return self._fit
 
     def set_document(self, doc: PdfDocument | None) -> None:
         self._doc = doc
@@ -197,8 +205,8 @@ class PageView(QAbstractScrollArea):
         self.set_tool(Tool.SELECT)
         self._cache.clear()
         self._render_timer.stop()
-        if doc is not None and self._fit_width:
-            self._zoom = self._fit_width_zoom()
+        if doc is not None and self._fit != FitMode.NONE:
+            self._zoom = self._fit_zoom()
             self.zoomChanged.emit(self._zoom)
         self._relayout()
         self.verticalScrollBar().setValue(0)
@@ -208,7 +216,7 @@ class PageView(QAbstractScrollArea):
 
     def set_zoom(self, zoom: float, anchor: QPointF | None = None) -> None:
         """Cambia el zoom manteniendo fijo el punto del documento bajo ``anchor``."""
-        self._set_fit_width(False)
+        self._set_fit(FitMode.NONE)
         self._apply_zoom(zoom, anchor)
 
     def zoom_in(self) -> None:
@@ -217,10 +225,13 @@ class PageView(QAbstractScrollArea):
     def zoom_out(self) -> None:
         self.set_zoom(zoom_out(self._zoom))
 
-    def set_fit_width(self, enabled: bool) -> None:
-        self._set_fit_width(enabled)
-        if enabled and self._doc is not None:
-            self._apply_zoom(self._fit_width_zoom())
+    def set_fit_mode(self, mode: FitMode) -> None:
+        self._set_fit(mode)
+        if mode != FitMode.NONE and self._doc is not None:
+            page = self._current_page
+            self._apply_zoom(self._fit_zoom())
+            if mode == FitMode.PAGE:
+                self.go_to_page(page)  # que la página quede entera, no a caballo entre dos
 
     def go_to_page(self, index: int) -> None:
         if not 0 <= index < len(self._layout):
@@ -424,9 +435,16 @@ class PageView(QAbstractScrollArea):
         return self._centering() - QPointF(self.horizontalScrollBar().value(),
                                            self.verticalScrollBar().value())
 
-    def _fit_width_zoom(self) -> float:
-        widest = max((w for w, _ in self._doc.page_sizes), default=0.0)
-        return zoom_to_fit_width(widest, self.viewport().width() - 2 * MARGIN_PX)
+    def _fit_zoom(self) -> float:
+        """Zoom del modo de ajuste actual. Manda la página más grande, para que quepan todas."""
+        sizes = self._doc.page_sizes
+        widest = max((w for w, _ in sizes), default=0.0)
+        available_width = self.viewport().width() - 2 * MARGIN_PX
+        if self._fit == FitMode.PAGE:
+            tallest = max((h for _, h in sizes), default=0.0)
+            return zoom_to_fit_page(widest, tallest, available_width,
+                                    self.viewport().height() - 2 * MARGIN_PX)
+        return zoom_to_fit_width(widest, available_width)
 
     def _relayout(self) -> None:
         sizes = self._doc.page_sizes if self._doc else []
@@ -465,10 +483,10 @@ class PageView(QAbstractScrollArea):
         self._place_selection_bar()
         self._schedule_render(RERENDER_DELAY_MS)
 
-    def _set_fit_width(self, enabled: bool) -> None:
-        if enabled != self._fit_width:
-            self._fit_width = enabled
-            self.fitWidthChanged.emit(enabled)
+    def _set_fit(self, mode: FitMode) -> None:
+        if mode != self._fit:
+            self._fit = mode
+            self.fitModeChanged.emit(mode)
 
     def _visible_pages(self) -> range:
         top = -self._origin().y()
@@ -926,8 +944,12 @@ class PageView(QAbstractScrollArea):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if self._fit_width and self._doc is not None:
-            self._apply_zoom(self._fit_width_zoom())
+        if self._fit != FitMode.NONE and self._doc is not None:
+            page = self._current_page
+            self._apply_zoom(self._fit_zoom())
+            if self._fit == FitMode.PAGE:
+                self._update_scrollbars()
+                self.go_to_page(page)
         self._update_scrollbars()
         self._update_current_page()
         self._place_selection_bar()
@@ -953,6 +975,13 @@ class PageView(QAbstractScrollArea):
         elif event.key() == Qt.Key_Delete and self._selected_annot is not None:
             info = self._selected_annot
             self.deleteRequested.emit(info.page, info.xref)
+        elif (event.key() in (Qt.Key_Left, Qt.Key_Right)
+              and not event.modifiers() & ~Qt.KeypadModifier
+              and self.horizontalScrollBar().maximum() == 0):
+            # ← → cambian de página. Si la página es más ancha que la ventana
+            # (mucho zoom), siguen moviendo la vista a los lados.
+            step = -1 if event.key() == Qt.Key_Left else 1
+            self.go_to_page(self._current_page + step)
         elif event.key() == Qt.Key_Home:
             self.go_to_page(0)
         elif event.key() == Qt.Key_End:

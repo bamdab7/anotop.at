@@ -10,11 +10,13 @@ from PySide6.QtWidgets import (QAbstractItemView, QLabel, QListView, QListWidget
 
 from anotador.core.annotations import AnnotationInfo
 from anotador.core.document import PdfDocument
-from anotador.core.geometry import zoom_to_fit
+from anotador.core.geometry import thumbnail_size, zoom_to_fit
 from anotador.core.night import NIGHT_DARK
 
 from .icons import swatch_icon
 
+# Tamaño máximo de una miniatura; el hueco toma la forma de las páginas del documento
+# (vertical para un A4, apaisado para unas diapositivas).
 THUMB_WIDTH = 120
 THUMB_HEIGHT = 160
 THUMB_CACHE_SIZE = 200
@@ -46,14 +48,14 @@ class ThumbnailModel(QAbstractListModel):
         self._cache: OrderedDict[int, QPixmap] = OrderedDict()
         self._pending: list[int] = []
         self._refreshing: set[int] = set()
+        self.size = QSize(THUMB_WIDTH, THUMB_HEIGHT)  # hueco de cada miniatura
         self._placeholder = self._make_placeholder(False)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._render_next)
 
-    @staticmethod
-    def _make_placeholder(night: bool) -> QPixmap:
-        pixmap = QPixmap(round(THUMB_HEIGHT * 0.7), THUMB_HEIGHT)
+    def _make_placeholder(self, night: bool) -> QPixmap:
+        pixmap = QPixmap(self.size)
         pixmap.fill(QColor(NIGHT_DARK, NIGHT_DARK, NIGHT_DARK) if night else QColor("#f4f4f4"))
         return _with_border(pixmap)
 
@@ -71,6 +73,9 @@ class ThumbnailModel(QAbstractListModel):
         self._cache.clear()
         self._pending.clear()
         self._refreshing.clear()
+        sizes = doc.page_sizes if doc else []
+        self.size = QSize(*thumbnail_size(sizes, THUMB_WIDTH, THUMB_HEIGHT))
+        self._placeholder = self._make_placeholder(self._night)
         self.endResetModel()
 
     def refresh(self, row: int) -> None:
@@ -131,7 +136,7 @@ class ThumbnailModel(QAbstractListModel):
             return
         dpr = self._view.devicePixelRatioF()
         width, height = self._doc.page_sizes[row]
-        zoom = zoom_to_fit(width, height, THUMB_WIDTH, THUMB_HEIGHT)
+        zoom = zoom_to_fit(width, height, self.size.width(), self.size.height())
         page = self._doc.render_page(row, zoom, dpr, night=self._night)
         image = QImage(page.samples, page.width, page.height, page.stride,
                        QImage.Format_RGB888)
@@ -218,6 +223,7 @@ class SidePanel(QTabWidget):
     def set_document(self, doc: PdfDocument | None) -> None:
         self._doc = doc
         self._thumb_model.set_document(doc)
+        self.thumbnails.setIconSize(self._thumb_model.size)
         self._fill_outline(doc.outline() if doc else [])
         self.set_annotations(doc.all_annotations() if doc else [])
 
